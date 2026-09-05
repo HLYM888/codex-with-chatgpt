@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -61,7 +62,7 @@ describe("safe update policy", () => {
     expect(isSafeUntrackedPath("../outside.txt")).toBe(false);
   });
 
-  function fakeRunner(options: { applyStatus?: number; validationStatus?: number } = {}) {
+  function fakeRunner(options: { applyStatus?: number; validationStatus?: number; validationStdout?: string; validationStderr?: string } = {}) {
     const calls: string[] = [];
     const run = (file: string, args: string[], cwd: string) => {
       calls.push(`${file} ${args.join(" ")}`);
@@ -86,7 +87,11 @@ describe("safe update policy", () => {
         return args[2] === "HEAD" ? { status: 0, stdout: "diff --git a/src/index.ts b/src/index.ts\n", stderr: "" } : { status: 0, stdout: "", stderr: "" };
       }
       if (file === "git" && args[0] === "apply") return { status: options.applyStatus ?? 0, stdout: "", stderr: "" };
-      if (file === "corepack.cmd") return { status: options.validationStatus ?? 0, stdout: "", stderr: "" };
+      if (file === "corepack.cmd") return {
+        status: options.validationStatus ?? 0,
+        stdout: options.validationStdout ?? "",
+        stderr: options.validationStderr ?? "",
+      };
       return { status: 0, stdout: "", stderr: "" };
     };
     return { run, calls };
@@ -157,6 +162,91 @@ describe("safe update policy", () => {
     expect(previous.commit).toBe(LOCAL_COMMIT);
     expect(previous.versionDir).toContain("source-");
     expect(fake.calls.some((call) => call.includes("git pull") || call.includes("git stash") || call.includes("git reset"))).toBe(false);
+  });
+
+  it("retains validation stdout and stderr in a failed validation reason", () => {
+    const root = makeTmpDir("safe-update-validation-diagnostics");
+    const state = makeTmpDir("safe-update-validation-diagnostics-state");
+    tempDirs.push(root, state);
+    prepareSourceCheckout(root);
+    const result = performSafeUpdate({
+      repoRoot: root,
+      stateDir: state,
+      run: fakeRunner({
+        validationStatus: 1,
+        validationStdout: "progress: resolved 1",
+        validationStderr: "ERR_PNPM_LOCKFILE_MISSING",
+      }).run,
+      validate: true,
+      allowDirtyCandidate: true,
+    });
+    expect(result.status).toBe("validation_failed");
+    expect(result.reason).toContain("stderr: ERR_PNPM_LOCKFILE_MISSING");
+    expect(result.reason).toContain("stdout: progress: resolved 1");
+  });
+
+  it.skipIf(process.platform !== "win32")("runs Windows Corepack validation through its Node CLI entry", () => {
+    const candidate = makeTmpDir("safe-update-windows-corepack-candidate");
+    const installed = makeTmpDir("safe-update-windows-corepack-installed");
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-safe-update-windows-corepack-state-"));
+    tempDirs.push(candidate, installed, state);
+
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "c2c-test",
+      GIT_AUTHOR_EMAIL: "test@c2c.local",
+      GIT_COMMITTER_NAME: "c2c-test",
+      GIT_COMMITTER_EMAIL: "test@c2c.local",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+    };
+    const commitFixture = (root: string, label: string): string => {
+      fs.mkdirSync(path.join(root, "dist", "cli"), { recursive: true });
+      fs.writeFileSync(path.join(root, "dist", "cli", "index.js"), label);
+      fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({
+        name: "c2c-windows-validation-fixture",
+        version: "0.0.0",
+        packageManager: "pnpm@11.24.0",
+        scripts: {
+          test: "node -e \"process.exit(0)\"",
+          typecheck: "node -e \"process.exit(0)\"",
+          build: "node -e \"process.exit(0)\"",
+        },
+      }));
+      fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), [
+        "lockfileVersion: '9.0'",
+        "",
+        "settings:",
+        "  autoInstallPeers: true",
+        "  excludeLinksFromLockfile: false",
+        "",
+        "importers:",
+        "  .: {}",
+        "",
+      ].join("\n"));
+      fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
+      for (const args of [["init", "-b", "main"], ["add", "dist", "package.json", "pnpm-lock.yaml"], ["commit", "-m", "fixture"]]) {
+        const result = spawnSync("git", args, { cwd: root, encoding: "utf8", env: gitEnv, windowsHide: true });
+        if (result.status !== 0) throw new Error(result.stderr.toString());
+      }
+      const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", env: gitEnv, windowsHide: true });
+      if (result.status !== 0) throw new Error(result.stderr.toString());
+      return result.stdout.toString().trim();
+    };
+
+    const candidateCommit = commitFixture(candidate, "candidate");
+    commitFixture(installed, "installed");
+    const result = performSafeUpdate({
+      repoRoot: candidate,
+      stateDir: state,
+      candidateSourceDir: candidate,
+      candidateCommit,
+      installedSourceDir: installed,
+      validate: true,
+      now: new Date("2026-09-05T06:00:00Z"),
+    });
+    expect(result.ok, result.reason).toBe(true);
+    expect(result.status).toBe("updated");
   });
 
   it("stages an explicit local candidate through the existing updater path", () => {

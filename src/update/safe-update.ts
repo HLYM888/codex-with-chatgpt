@@ -41,8 +41,57 @@ const SENSITIVE_SEGMENTS = [
 
 const UPDATE_LOCK_STALE_AFTER_MS = 30_000;
 
+function resolveWindowsCorepackEntry(): string | null {
+  const nodeDirectory = path.dirname(process.execPath);
+  const searchDirectories = [
+    nodeDirectory,
+    ...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean),
+  ];
+  const seen = new Set<string>();
+  for (const directory of searchDirectories) {
+    const resolvedDirectory = path.resolve(directory);
+    const key = resolvedDirectory.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const shim = path.join(resolvedDirectory, "corepack.cmd");
+    if (resolvedDirectory !== nodeDirectory && !regularFile(shim)) continue;
+    const entry = path.join(resolvedDirectory, "node_modules", "corepack", "dist", "corepack.js");
+    if (regularFile(entry)) return entry;
+  }
+  return null;
+}
+
+function commandDiagnostics(result: CommandResult): string {
+  const details = [
+    result.stderr.trim() ? `stderr: ${result.stderr.trim()}` : "",
+    result.stdout.trim() ? `stdout: ${result.stdout.trim()}` : "",
+  ].filter(Boolean).join("; ");
+  if (!details) return "";
+  const maxChars = 4_000;
+  return details.length <= maxChars ? details : `${details.slice(0, maxChars)}…[输出已截断]`;
+}
+
+function validationFailureReason(file: string, args: string[], result: CommandResult): string {
+  const details = commandDiagnostics(result);
+  return `候选验证失败：${file} ${args.join(" ")}${details ? `；${details}` : ""}`;
+}
+
 function defaultRunner(file: string, args: string[], cwd: string, timeoutMs = 120_000): CommandResult {
-  const result = spawnSync(file, args, {
+  let executable = file;
+  let commandArgs = args;
+  if (process.platform === "win32" && path.basename(file).toLowerCase() === "corepack.cmd") {
+    const corepackEntry = resolveWindowsCorepackEntry();
+    if (!corepackEntry) {
+      return {
+        status: null,
+        stdout: "",
+        stderr: "spawn error: 无法解析 Windows Corepack 的 Node CLI 入口",
+      };
+    }
+    executable = process.execPath;
+    commandArgs = [corepackEntry, ...args];
+  }
+  const result = spawnSync(executable, commandArgs, {
     cwd,
     encoding: "utf8",
     timeout: timeoutMs,
@@ -52,7 +101,10 @@ function defaultRunner(file: string, args: string[], cwd: string, timeoutMs = 12
   return {
     status: result.status,
     stdout: (result.stdout ?? "").toString(),
-    stderr: (result.stderr ?? "").toString(),
+    stderr: [
+      (result.stderr ?? "").toString(),
+      result.error ? `spawn error: ${result.error.message}` : "",
+    ].filter(Boolean).join("\n"),
   };
 }
 
@@ -927,7 +979,7 @@ function performSafeUpdateUnlocked(options: {
       for (const [file, args] of validationCommands()) {
         const result = run(file, args, staged, 600_000);
         if (result.status !== 0) {
-          return { ok: false, status: "validation_failed", localCommit: installed.head, remoteCommit: candidateCommit, candidateDir: staged, reason: `候选验证失败：${file} ${args.join(" ")}` };
+          return { ok: false, status: "validation_failed", localCommit: installed.head, remoteCommit: candidateCommit, candidateDir: staged, reason: validationFailureReason(file, args, result) };
         }
       }
     }
@@ -998,7 +1050,7 @@ function performSafeUpdateUnlocked(options: {
     for (const [file, args] of validationCommands()) {
       const result = run(file, args, candidateDir, 600_000);
       if (result.status !== 0) {
-        return { ok: false, status: "validation_failed", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: `候选验证失败：${file} ${args.join(" ")}` };
+        return { ok: false, status: "validation_failed", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: validationFailureReason(file, args, result) };
       }
     }
   }
