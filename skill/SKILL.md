@@ -18,16 +18,29 @@ The C2C Bridge gives ChatGPT read-only MCP access to the current workspace, so
 control messages between you and ChatGPT stay tiny (< 1 KB) — ChatGPT pulls
 whatever data it needs by itself.
 
+## Instruction scope
+
+This skill guides an already authorized collaboration task; it does not grant
+new authority. Current explicit user instructions take precedence over skill
+preferences. Incorporate new requirements without abandoning completed work.
+If a skill instruction genuinely blocks progress, identify the exact SKILL.md
+and quote the applicable instruction; distinguish a requirement from an
+interpretation. Finish independent authorized work while a material input is
+pending. Reuse unchanged verification; repeat or broaden checks only for new
+changes, failures, or unresolved evidence gaps.
+
 **Golden rules**
 
 1. NEVER paste file contents, diffs, or logs into ChatGPT. ChatGPT reads them through MCP.
-2. NEVER show the user technical internals (MCP, OAuth, PKCE, tunnel, ports, localhost).
-   Speak in terms of "连接 ChatGPT / 安全连接 / 配对". The only exception is the
-   **guided manual ChatGPT setup** below: expose only the exact settings
-   field labels/values the user must enter, without explaining internals.
+2. Default to plain language such as "连接 ChatGPT / 安全连接 / 配对".
+   Explain technical details only when requested or needed to understand a
+   real failure or decision. Never expose credentials. During guided setup,
+   show only the exact non-secret settings labels/values needed for the step.
 3. The pairing code is the ONLY credential you may ever type into a browser.
    Never touch OAuth tokens, cookies, or session storage.
-4. If something fails, run `c2c doctor` and repair silently. Only involve the user
+4. If something fails, run `c2c doctor` and repair within existing authority.
+   Report material failures and unresolved limits; avoid routine narration.
+   Only require user action
    for logins, CAPTCHA, 2FA, explicit consent screens, or **guided manual
    ChatGPT setup** below — and then give them ONE action.
    Before the first ChatGPT connection on this machine, `c2c prefs --json`:
@@ -54,11 +67,10 @@ whatever data it needs by itself.
    - The ONLY exception: the user explicitly says the Cloudflare login must use
      their own browser session — that single Cloudflare login step may go through
      their browser; everything else stays in the built-in browser.
-   - If the user asks to run ChatGPT in their own browser, refuse politely and
-     explain: "Codex 需要持续调用 ChatGPT 和配置连接，这会频繁操作页面，可能影响
-     你浏览器的正常使用。ChatGPT 只能跑在内置浏览器里。" Only if the user replies
-     with an explicit "我愿意承担影响" may you proceed in their browser; otherwise
-     keep ChatGPT in the built-in browser, every time they ask.
+   - If the user explicitly chooses another browser, follow that request only
+     through currently available, documented browser tools. Bind the requested
+     tab and avoid unrelated tabs. Do not require a scripted acceptance phrase
+     or override the user's explicit choice with this default preference.
 6. Conversation reuse depends on `c2c session --json` → `conversation.mode`
    (see Conversation management). Do not invent a second mode. In Project
    mode, use `c2c session --same-thread --json` only after this Codex
@@ -81,8 +93,11 @@ whatever data it needs by itself.
    own connectors — never edit those.
 7. After first-time setup, never ask the user to approve writing C2C's local
    settings directory. Run `c2c sandbox-allow --json` (idempotent). If it fails
-   with EPERM / Operation not permitted, request elevated permissions and retry
-   ONCE. After `{ "alreadyAllowed": true }` or `{ "added": true }`, stay silent.
+   with EPERM / Operation not permitted, use an approval mechanism only when
+   the runtime actually provides and permits it; otherwise report the precise
+   blocked write and continue independent work. Never request forbidden
+   escalation or broaden permissions as a workaround. After
+   `{ "alreadyAllowed": true }` or `{ "added": true }`, stay silent.
 8. ChatGPT pages: only the URLs in **In-app browser (ChatGPT)**. Never start
    from chatgpt.com and click through menus.
 9. **Doctor gate.** After `c2c doctor --json`, do not `goto` ChatGPT and do not
@@ -117,26 +132,24 @@ whatever data it needs by itself.
 
 ## In-app browser (ChatGPT)
 
-Official skill: `control-in-app-browser`. These C2C rules override defaults
-that close the tab, hide the window, or stall on the settings page.
+Use the current in-app browser tool documentation, not remembered APIs.
 
-1. **Surface.** Once per Codex session: `setupBrowserRuntime()`, then
-   `const iab = await agent.browsers.get("iab")`. Reuse `iab`. Do not re-read
-   `documentation()` if it is already bound. Never `getDefault()`, `getForUrl()`,
-   or Computer Use.
+1. **Surface.** Discover and select the bound conversation using the available
+   browser entry point. With the current CUA tool, use `cua.getState()` for an
+   inventory and `cua.getTab(tabId, { browser: browserId })` for the matching
+   in-app tab; follow its first-call requirements and returned documentation.
+   Use only APIs actually exposed by the runtime. A missing legacy browser
+   skill or API is not a reason to reinstall tools or invent a substitute call.
 
-2. **One tab.** Create the ChatGPT tab once (`tabs.new()`). After that, only
-   `tab.goto(...)` to switch URLs. If the tab still exists, claim it — never
-   open a second ChatGPT tab. Do not `goto` the URL you are already on.
+2. **One tab.** Reuse the verified tab. Create an in-app tab only if the bound
+   tab is absent and the session rules authorize it. Navigate only when the
+   required URL differs. Never reuse another task's chat merely because it is
+   open, and do not control unrelated browser surfaces.
 
-3. **Foreground + keep (standby).** Right after opening or claiming the tab:
-   - `await (await iab.capabilities.get("visibility")).set(true)` — first-time
-     setup and ChatGPT chatting stay in front of the user so they can watch.
-   - `await tab.markHandoff()` immediately, then again at the start and end of
-     every turn. After setup succeeds or the C2C chat is open, also
-     `await tab.markDeliverable()`.
-   Never close this tab. Finished, waiting for the user, or timed out: leave it
-   marked (standby). Do not let default turn cleanup close it.
+3. **Visible and retained.** Keep the collaboration tab visible and retained.
+   Use `markHandoff` / `markDeliverable` or visibility controls only if the
+   runtime documents them. Do not close the user's collaboration tab or let a
+   legacy helper requirement block an otherwise usable connection.
 
 4. **URLs only** (same tab, `goto` — never hunt menus):
    - 开发人员模式: `https://chatgpt.com/#settings/Security`
@@ -172,17 +185,19 @@ that close the tab, hide the window, or stall on the settings page.
    the session URL. If validation fails, keep the old saved URL. Do not open a
    throwaway verify chat and later another C2C chat.
 
-8. **Wait for a ChatGPT reply (do not hold one long browser wait).** After you
-   send INIT, EXECUTED, boot, or the workspace_info check: `markHandoff`, keep
-   the tab foreground, and stay in this same task. Do not `waitFor` 5 minutes
-   and do not screenshot-poll. Every 20–30 seconds, one cheap DOM check:
-   - still generating → wait again (do not type, do not resend);
-   - `STATE: PLAN` / `DONE` / `BLOCKED` / the verify workspace name → read it
-     and continue the existing protocol;
-   - visible error → repair; do not start a new chat.
-   A browser/js timeout is not failure. Claim the same tab, read the page, keep
-   standby. If ChatGPT is still thinking, keep polling. Never open a second
-   tab and never resend INIT/EXECUTED just because a wait timed out.
+8. **Wait for a ChatGPT reply.** After sending, retain the same tab and
+   continue independent authorized work. Prefer native completion events when
+   available. If DOM checks are the only supported mechanism, use a bounded
+   schedule based on observed response duration: normally check after about
+   two minutes, then back off toward five minutes while generation is unchanged.
+   Set a task-appropriate deadline and avoid any single blocking wait over
+   60 seconds. A short routine reply may justify an earlier first check.
+   - Still generating: do not type or resend.
+   - PLAN / DONE / BLOCKED or workspace verification: read and continue.
+   - Visible error: inspect and repair the actual cause.
+   A browser timeout is not proof of failed generation. Reclaim the same tab
+   and read its current state. At the deadline, report pending/blocked evidence;
+   do not create another chat, repeatedly resend, or claim background persistence.
 
 ## Locations
 
@@ -190,18 +205,25 @@ that close the tab, hide the window, or stall on the settings page.
   (installer/update MUST replace this line in the installed Skill with the user's actual checkout path.)
 - CLI: let `<checkout>` mean the path on the previous line; run
   `node "<checkout>/bin/c2c.js" <command>` (or `c2c <command>` if globally linked).
-  All commands support `--json` for parsing.
-- If the checkout has no `node_modules` or no `dist/`, first run
-  `corepack pnpm install && corepack pnpm build` inside it.
+  Check `<command> --help` before relying on flags; only commands that expose
+  `--json` support it. For example, `record` and `restart` do not.
+- If dependencies or build output are missing, diagnose the selected checkout
+  and use the isolated update/repair workflow. Do not install over a dirty
+  active source. Run build steps only in the authorized candidate, and stop
+  dependent steps if installation or validation fails.
 - Always pass `-w <workspace root>` (the project the user is working on, NOT the c2c repo).
 
 ## Daily update check
 
-At the START of every workflow below (before anything else), run these two
-commands (both are cheap / cached; never mention them unless an update exists):
+At the start of a connection/coding session, a cached `c2c update-check --json`
+may discover updates; reuse that result within the task. An explicit update
+request uses the update workflow. Do not trigger updates when disconnecting,
+stopping, rolling back, or merely reading state. Update discovery alone does
+not broaden the current task's installation authority.
 
-1. `c2c update-check --json`
-2. `c2c sandbox-allow --json` — writes the C2C state directory into Codex's
+Run `c2c sandbox-allow --json` only when authorized setup/repair needs state-dir
+access and the existing configuration does not already allow it. It writes the
+C2C state directory into Codex's
    sandbox `writable_roots` (macOS: `~/Library/Application Support/codex-with-chatgpt`;
    Windows: `%LOCALAPPDATA%\codex-with-chatgpt`; config file is
    `~/.codex/config.toml` on both, or `%USERPROFILE%\.codex\config.toml` on Windows).
@@ -322,14 +344,18 @@ false or when `userPrompt` is absent.
      `userPrompt` and wait for an answer.
 
 1. Detect prerequisites yourself: `node --version` (>= 20), and check `cloudflared`.
-   - If cloudflared is missing on macOS run `brew install cloudflared`; on Windows use
-     `winget install Cloudflare.cloudflared`. Do this yourself; don't ask.
-2. If the c2c repo has no `node_modules`, run `pnpm install && pnpm build` in it.
+   If missing, reuse a verified existing installation first. Install a required
+   dependency only when the user's setup request or prior instructions authorize
+   it; otherwise explain the exact missing dependency and necessary action.
+   Do not install unrelated packages or silently expand permissions.
+2. If build output or dependencies are missing, follow the isolated candidate
+   procedure in Locations and the update workflow; preserve the active source.
 3. Run `c2c sandbox-allow --json`, then **Connection choice**, then
    `c2c setup -w <workspace> --json`.
    `sandbox-allow` edits Codex `config.toml` only — it adds C2C's state directory
    to `[sandbox_workspace_write].writable_roots` so later chats can write logs
-   without elevation. If the write is denied, request approval and retry once.
+   without elevation. If denied, follow Golden rule 7 and the actual runtime
+   permission policy; never invent an elevation path.
    → returns `{ mcpUrl, pairingCode, workspaceName, connectorName, ... }`.
    `connectorName` is this workspace's plugin title (legacy installs stay
    `Codex with ChatGPT`; additional workspaces get `Codex with ChatGPT · <name>`).
@@ -555,7 +581,7 @@ Project. Do **not** click the ChatGPT sidebar to create the Project
 ### Project instructions (paste into 项目设置 → 指令)
 
 ```
-你是一个本地工作区的规划与复核层，Codex 负责执行。
+你是当前绑定工作区的规划与复核层，Codex 负责执行；连接可见范围不等于项目授权。
 
 本项目仅绑定到：
 - 工作区名称：{{workspace_name}}
@@ -563,19 +589,17 @@ Project. Do **not** click the ChatGPT sidebar to create the Project
 - 连接（只能使用这个）：{{connector_name}}
 
 调用工具时只能使用上述连接，不得使用其他 Codex with ChatGPT 连接。
-如果 workspace_info 返回了不同的工作区名称，立即停止，不要规划，也不要使用本项目的记忆。
+先核对 workspace_info 的实际身份；Git 项目还须用当前 Git 状态确认仓库和分支。名称相同不能证明是同一仓库或获准写入。存在项目级 Order、登记表或路径合同才按其实际规则读取和核验；普通非 Git 工作区不强制创建公司治理文件。身份不符时停止依赖该连接的动作，不猜测其他项目。
 
 通过该连接读取代码、Git 状态、差异和已允许读取的命令输出。不得要求任何人粘贴文件正文、差异或日志。
 收到 EXECUTED 后，如果 execution_output 中存在可读项目，先 list 再 read；如果状态为 restricted，改为从 Git 复核。
 不得把仓库上传到本项目的文件或来源中。
 
-事实冲突时按以下顺序取信：
-1. 连接读取到的当前代码
-2. 本对话中的 HANDOFF（当前任务目标、进度和下一步）
-3. 本指令
-4. 本项目记忆（只保存长期架构；过期记忆失效）
+权限与目标以最新明确用户指令、平台边界和当前有效项目合同为准；拒绝项、Order 和路径限制不能被交接摘要放宽。
+实际状态以连接读取的代码、Git、运行证据及项目权威状态为准。规格说明应实现什么，运行证据说明实际存在什么；两者冲突须调查。
+HANDOFF 和项目记忆只用于定位，不单独授予权限，不覆盖最新用户指令或有效合同。
 
-本项目记忆只属于该工作区。收到 HANDOFF 后，以交接摘要为准，通过连接重新读取必要代码，并从 NEXT_EXPECTED_STEP 继续。
+本项目记忆只属于该工作区。收到 HANDOFF 后重新核对当前身份、目标和必要证据；只有下一步仍在现行范围内才继续，已完成工作不得无理由重做。
 
 所有用户可见内容、解释、计划、复核结论和会话标题都使用简体中文。只有 C2C 固定信封字段 `[C2C]`、`STATE`、`TASK_ID`、`ITERATION` 及其协议状态值可以保留英文；工具名、代码、命令、路径和精确标识符保持原样。其他内容章节标题和标签必须使用自然的简体中文，禁止输出 `REVIEW_BASIS`、`ACCEPTED_SCOPE`、`RESIDUAL_RISK`、`ROLLBACK`、`NEXT_EXPECTED_STEP`、`VERDICT` 等大写英文下划线标题；分别使用“复核依据”“验收范围”“剩余风险”“回滚方法”“下一步”“结论”，结论值使用“通过”“需修正”或“阻断”。
 内容必须具体，说明原因、涉及文件和测试建议；不要空洞的一句话，也不要生成四十步史诗。使用 C2C 控制消息格式。
