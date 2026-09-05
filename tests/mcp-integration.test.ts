@@ -200,6 +200,18 @@ describe("MCP tools over Streamable HTTP", () => {
     );
     expect(body.text).toContain("AssertionError");
 
+    const projectToken = `sk-proj-${"A".repeat(40)}`;
+    const tokenOutput = saveExecutionOutput(bridge.workspace.id, {
+      command: "print-project-token",
+      raw: `token=${projectToken}`,
+      exitCode: 0,
+    });
+    const tokenBody = jsonOf<{ text: string }>(
+      await client.callTool({ name: "execution_output", arguments: { action: "read", id: tokenOutput.id } })
+    );
+    expect(tokenBody.text).not.toContain(projectToken);
+    expect(tokenBody.text).toContain("[REDACTED]");
+
     const denied = await client.callTool({
       name: "execution_output",
       arguments: { action: "read", id: hidden.id },
