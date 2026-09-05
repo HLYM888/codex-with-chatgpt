@@ -20,6 +20,10 @@ whatever data it needs by itself.
 
 ## Capability-based execution sharing
 
+Here, ChatGPT means the user's ordinary Chat conversation. Reuse that Chat;
+do not switch to Work or create a Work task as an execution substitute. A future
+explicit request for Work must be treated as a separate surface choice.
+
 Before assigning a new kind of work, distinguish documented product support,
 tools exposed in this conversation, and capabilities verified by a real result.
 Reuse an unchanged capability receipt; recheck after a model, mode, connection
