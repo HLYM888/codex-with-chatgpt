@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cleanup } from "./helpers.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -26,6 +26,20 @@ function runLauncher(stateDir: string) {
     windowsHide: true,
     env: { ...process.env, C2C_STATE_DIR: stateDir },
   });
+}
+
+function buildRuntimeForLauncher(): void {
+  const tsc = path.join(projectRoot, "node_modules", "typescript", "bin", "tsc");
+  const result = spawnSync(process.execPath, [tsc, "-p", path.join(projectRoot, "tsconfig.json")], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    windowsHide: true,
+    env: { ...process.env, CI: "1" },
+  });
+  if (result.status !== 0) {
+    const output = result.error?.message || result.stderr || result.stdout || "no diagnostic output";
+    throw new Error(`TypeScript build failed before launcher tests: ${output.slice(-2000)}`);
+  }
 }
 
 function commitFixture(root: string): string {
@@ -57,6 +71,13 @@ function prepareCandidate(state: string, name: string, packageJson: object = {})
 }
 
 describe("stable launcher active-version gate", () => {
+  beforeAll(() => {
+    // The updater validates before its final build step. Compile the exact
+    // checkout here so the launcher exercises the real validator in a fresh
+    // source-only candidate as well as in a previously built checkout.
+    buildRuntimeForLauncher();
+  });
+
   it("fails closed instead of falling back when the active candidate is missing", () => {
     const state = makeTmpDir("launcher-invalid-active");
     tempDirs.push(state);

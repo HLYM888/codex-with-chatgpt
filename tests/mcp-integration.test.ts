@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -5,12 +7,21 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { startBridge, type Bridge } from "../src/bridge/server.js";
 import { appendExecutionRecord } from "../src/execution/records.js";
 import { saveExecutionOutput } from "../src/execution/output.js";
-import { makeTmpDir, cleanup, write, makeGitRepo, git, isolateStateDir } from "./helpers.js";
+import { cleanup, write, makeGitRepo, git } from "./helpers.js";
 
 let root: string;
 let bridge: Bridge;
 let client: Client;
 let accessToken: string;
+const tempDirs: string[] = [];
+const previousStateDir = process.env.C2C_STATE_DIR;
+
+function makeTmpDir(name: string): string {
+  const safeName = name.replaceAll(/[^A-Za-z0-9_-]/g, "_");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `c2c-mcp-${safeName}-`));
+  tempDirs.push(dir);
+  return dir;
+}
 
 function textOf(result: { content?: unknown }): string {
   const content = result.content as { type: string; text: string }[];
@@ -22,7 +33,8 @@ function jsonOf<T = Record<string, unknown>>(result: { content?: unknown }): T {
 }
 
 beforeAll(async () => {
-  isolateStateDir();
+  const stateDir = makeTmpDir("state");
+  process.env.C2C_STATE_DIR = stateDir;
   root = makeTmpDir("mcp-ws");
   makeGitRepo(root);
   write(root, "package.json", JSON.stringify({ name: "demo", scripts: { test: "vitest run" }, dependencies: { react: "^19.0.0" } }));
@@ -52,7 +64,9 @@ beforeAll(async () => {
 afterAll(async () => {
   await client.close();
   await bridge.close();
-  cleanup(root);
+  for (const dir of tempDirs.splice(0)) cleanup(dir);
+  if (previousStateDir === undefined) delete process.env.C2C_STATE_DIR;
+  else process.env.C2C_STATE_DIR = previousStateDir;
 });
 
 describe("MCP tools over Streamable HTTP", () => {
