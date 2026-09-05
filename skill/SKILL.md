@@ -221,7 +221,7 @@ commands (both are cheap / cached; never mention them unless an update exists):
 活动目录执行更新；检测到本地改动时只返回 `updateDeferred`，等待明确更新触发。
 
 若老板明确指定一个本地候选版本，必须同时提供该候选的完整 Git 提交；使用
-`c2c update --candidate "<candidate>" --commit "<40-char-sha>" --json`。该路径
+`node "<candidate>/dist/cli/index.js" update --candidate "<candidate>" --commit "<40-char-sha>" --json`。该路径
 会由同一更新器先核对候选工作树、精确 HEAD 和干净的已跟踪文件，再在 state 目录
 的 `candidates/` 下建立隔离副本，执行与普通更新相同的测试、类型检查和构建，最后
 走同一把更新锁、Skill 备份和原子版本指针流程。不要把工作树路径直接写入活动指针，
