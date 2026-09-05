@@ -815,7 +815,7 @@ the previous public address is gone. Doctor already started a new one.
 | Same explicit ChatGPT setup/reconnect browser configuration step fails twice after repair | Stop automating ChatGPT settings and use **Guided manual ChatGPT setup fallback**. Do not count browser/js timeout, loading/generating, or login/2FA waiting as failures. |
 | Port conflict | handled automatically; never surface to the user |
 | Every new chat “repairs” / cannot write the log or settings directory | `c2c sandbox-allow --json` (once). Do not ask the user. |
-| cloudflared missing | install it yourself (brew/winget), then retry |
+| cloudflared missing | Reuse a verified existing installation. Install with brew/winget only when this task has explicit installation authorization and the existing isolated candidate rules are satisfied; otherwise report the exact missing dependency and use an existing capability (or stop if none exists). |
 | Sidebar has no「项目」 | Ask the user to hover「聊天」, click the …, choose「按项目整理」 |
 | Collection page is the wrong Project | Ask the user to open the named collection and say「已找到」, or accept long-chat |
 | Windows 黑色终端窗口闪现或抢焦点 | 先区分来源：C2C 自身子进程必须以 `windowsHide: true` 启动；Codex 普通、非交互命令使用 `tty: false`，只在确需交互终端时使用 `tty: true`。不要修改 Windows Terminal、注册表或系统默认终端。终止已经卡住的旧 TTY 命令，并让已打开的任务在下一次工具调用前加载此策略。 |
