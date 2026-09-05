@@ -370,14 +370,24 @@ function safePackageName(name: string): boolean {
 
 function resolvePackageDirectory(fromDirectory: string, packageName: string): string | null {
   if (!safePackageName(packageName)) return null;
-  let current = path.resolve(fromDirectory);
-  while (true) {
-    const candidate = path.join(current, "node_modules", packageName);
-    if (readableDirectory(candidate) && regularFile(path.join(candidate, "package.json"))) return candidate;
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
+  const starts = [path.resolve(fromDirectory)];
+  try {
+    const real = fs.realpathSync(fromDirectory);
+    if (!samePath(real, starts[0])) starts.push(real);
+  } catch {
+    /* the normal path walk below reports the missing dependency */
   }
+  for (const start of starts) {
+    let current = start;
+    while (true) {
+      const candidate = path.join(current, "node_modules", packageName);
+      if (readableDirectory(candidate) && regularFile(path.join(candidate, "package.json"))) return candidate;
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  return null;
 }
 
 function hasCompleteDependencyTree(root: string): boolean {

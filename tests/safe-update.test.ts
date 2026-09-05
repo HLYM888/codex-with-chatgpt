@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { classifyUpdate, isSafeUntrackedPath, performSafeUpdate, rollbackActiveVersion, shouldKeepOldVersion } from "../src/update/safe-update.js";
+import { classifyUpdate, isCompleteCandidateVersion, isSafeUntrackedPath, performSafeUpdate, rollbackActiveVersion, shouldKeepOldVersion } from "../src/update/safe-update.js";
 import { cleanup, makeTmpDir } from "./helpers.js";
 
 const tempDirs: string[] = [];
@@ -13,6 +13,7 @@ const REMOTE_COMMIT = "2".repeat(40);
 const OLD_COMMIT = "3".repeat(40);
 const NEW_COMMIT = "4".repeat(40);
 const LINKED_COMMIT = "5".repeat(40);
+const PNPM_COMMIT = "6".repeat(40);
 
 function prepareSourceCheckout(root: string): void {
   fs.mkdirSync(path.join(root, "dist", "cli"), { recursive: true });
@@ -430,5 +431,27 @@ describe("safe update policy", () => {
     const result = rollbackActiveVersion(state);
     expect(result.status).toBe("blocked");
     expect(JSON.parse(fs.readFileSync(path.join(state, "active-version.json"), "utf8")).commit).toBe(LINKED_COMMIT);
+  });
+
+  it("recognizes a complete pnpm-style dependency tree through package junctions", () => {
+    const state = makeTmpDir("safe-update-pnpm-tree-state");
+    tempDirs.push(state);
+    const version = path.join(state, "candidates", "pnpm-tree");
+    const packageStore = path.join(version, "node_modules", ".pnpm", "root-dep@1", "node_modules");
+    const packageDir = path.join(packageStore, "root-dep");
+    fs.mkdirSync(path.join(version, "dist", "cli"), { recursive: true });
+    fs.writeFileSync(path.join(version, "dist", "cli", "index.js"), "candidate");
+    fs.writeFileSync(path.join(version, "package.json"), JSON.stringify({ dependencies: { "root-dep": "1.0.0" } }));
+    fs.writeFileSync(path.join(version, ".c2c-version.json"), JSON.stringify({ schemaVersion: "1.0.0", kind: "source-snapshot", commit: PNPM_COMMIT }));
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "root-dep", dependencies: { "nested-dep": "1.0.0" } }));
+    fs.mkdirSync(path.join(packageStore, "nested-dep"), { recursive: true });
+    fs.writeFileSync(path.join(packageStore, "nested-dep", "package.json"), JSON.stringify({ name: "nested-dep", version: "1.0.0" }));
+    try {
+      fs.symlinkSync(packageDir, path.join(version, "node_modules", "root-dep"), "junction");
+    } catch {
+      return;
+    }
+    expect(isCompleteCandidateVersion(state, version, PNPM_COMMIT)).toBe(true);
   });
 });
