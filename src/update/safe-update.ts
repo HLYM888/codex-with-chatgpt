@@ -568,24 +568,75 @@ function copyCurrentVersionTree(sourceDir: string, targetDir: string, relative =
   }
 }
 
-function linkCurrentDependencies(sourceDir: string, targetDir: string): boolean {
-  const source = path.join(sourceDir, "node_modules");
-  if (!fs.existsSync(source)) return false;
-  const target = path.join(targetDir, "node_modules");
+type PendingDependencyLink = {
+  target: string;
+  resolvedSource: string;
+};
+
+function isWithinDirectory(root: string, candidate: string): boolean {
+  const normalizedRoot = normalizedPath(root);
+  const normalizedCandidate = normalizedPath(candidate);
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+}
+
+function copyDependencyTree(source: string, target: string): boolean {
+  const sourceRoot = path.resolve(source);
+  const targetRoot = path.resolve(target);
+  const pendingLinks: PendingDependencyLink[] = [];
+
+  const copyRealEntries = (currentSource: string, currentTarget: string): void => {
+    for (const entry of fs.readdirSync(currentSource, { withFileTypes: true })) {
+      const sourcePath = path.join(currentSource, entry.name);
+      const targetPath = path.join(currentTarget, entry.name);
+      const stat = fs.lstatSync(sourcePath);
+      if (stat.isSymbolicLink()) {
+        const resolvedSource = fs.realpathSync(sourcePath);
+        if (!isWithinDirectory(sourceRoot, resolvedSource)) {
+          throw new Error("依赖树包含候选目录外的链接");
+        }
+        const resolvedStat = fs.statSync(resolvedSource);
+        if (!resolvedStat.isDirectory()) {
+          throw new Error("依赖树包含非目录链接");
+        }
+        pendingLinks.push({ target: targetPath, resolvedSource });
+      } else if (stat.isDirectory()) {
+        fs.mkdirSync(targetPath, { recursive: true });
+        copyRealEntries(sourcePath, targetPath);
+      } else if (stat.isFile()) {
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.copyFileSync(sourcePath, targetPath);
+      } else {
+        throw new Error("依赖树包含不支持的文件类型");
+      }
+    }
+  };
+
   try {
-    const stat = fs.lstatSync(source);
-    if (stat.isSymbolicLink()) {
-      const resolved = fs.realpathSync(source);
-      fs.symlinkSync(resolved, target, process.platform === "win32" ? "junction" : "dir");
-    } else if (stat.isDirectory()) {
-      fs.cpSync(source, target, { recursive: true, dereference: false, errorOnExist: true });
-    } else {
-      return false;
+    const sourceStat = fs.lstatSync(sourceRoot);
+    if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) return false;
+    fs.mkdirSync(targetRoot, { recursive: true });
+    copyRealEntries(sourceRoot, targetRoot);
+    for (const link of pendingLinks) {
+      const relativeResolved = path.relative(sourceRoot, link.resolvedSource);
+      if (!relativeResolved || path.isAbsolute(relativeResolved) || relativeResolved.split(/[\\/]/).includes("..")) {
+        return false;
+      }
+      const targetResolved = path.resolve(targetRoot, relativeResolved);
+      if (!isWithinDirectory(targetRoot, targetResolved) || !regularDirectory(targetResolved) || fs.existsSync(link.target)) {
+        return false;
+      }
+      fs.symlinkSync(targetResolved, link.target, process.platform === "win32" ? "junction" : "dir");
     }
     return true;
   } catch {
     return false;
   }
+}
+
+function linkCurrentDependencies(sourceDir: string, targetDir: string): boolean {
+  const source = path.join(sourceDir, "node_modules");
+  if (!fs.existsSync(source)) return false;
+  return copyDependencyTree(source, path.join(targetDir, "node_modules"));
 }
 
 function materializeSourceVersion(repoRoot: string, stateDir: string, sourceCommit: string, now: Date): VersionPointer | null {

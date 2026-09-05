@@ -628,4 +628,70 @@ describe("safe update policy", () => {
     }
     expect(isCompleteCandidateVersion(state, version, PNPM_COMMIT)).toBe(true);
   });
+
+  it("materializes pnpm directory links inside the rollback snapshot", () => {
+    const candidate = makeTmpDir("safe-update-pnpm-candidate");
+    const installed = makeTmpDir("safe-update-pnpm-installed");
+    const state = makeTmpDir("safe-update-pnpm-state");
+    tempDirs.push(candidate, installed, state);
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "c2c-test",
+      GIT_AUTHOR_EMAIL: "test@c2c.local",
+      GIT_COMMITTER_NAME: "c2c-test",
+      GIT_COMMITTER_EMAIL: "test@c2c.local",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+    };
+    const commitFixture = (root: string, packageJson: Record<string, unknown>): string => {
+      fs.mkdirSync(path.join(root, "dist", "cli"), { recursive: true });
+      fs.writeFileSync(path.join(root, "dist", "cli", "index.js"), "fixture");
+      fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(packageJson));
+      fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
+      for (const args of [["init", "-b", "main"], ["add", "dist", "package.json"], ["commit", "-m", "fixture"]]) {
+        const result = spawnSync("git", args, { cwd: root, encoding: "utf8", env: gitEnv, windowsHide: true });
+        if (result.status !== 0) throw new Error(result.stderr.toString());
+      }
+      const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", env: gitEnv, windowsHide: true });
+      if (result.status !== 0) throw new Error(result.stderr.toString());
+      return result.stdout.toString().trim();
+    };
+
+    const candidateCommit = commitFixture(candidate, { name: "candidate", version: "0.0.0" });
+    const installedCommit = commitFixture(installed, {
+      name: "installed",
+      version: "0.0.0",
+      dependencies: { "root-dep": "1.0.0" },
+    });
+    const packageDirectory = path.join(installed, "node_modules", ".pnpm", "root-dep@1", "node_modules", "root-dep");
+    fs.mkdirSync(packageDirectory, { recursive: true });
+    fs.writeFileSync(path.join(packageDirectory, "package.json"), JSON.stringify({ name: "root-dep", version: "1.0.0" }));
+    try {
+      fs.symlinkSync(
+        packageDirectory,
+        path.join(installed, "node_modules", "root-dep"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    } catch {
+      return;
+    }
+
+    const result = performSafeUpdate({
+      repoRoot: candidate,
+      stateDir: state,
+      candidateSourceDir: candidate,
+      candidateCommit,
+      installedSourceDir: installed,
+      validate: false,
+      now: new Date("2026-09-05T06:00:00Z"),
+    });
+    expect(result).toMatchObject({ ok: true, status: "updated", localCommit: installedCommit, remoteCommit: candidateCommit });
+    const previous = JSON.parse(fs.readFileSync(path.join(state, "previous-version.json"), "utf8")) as { versionDir: string; commit: string };
+    expect(previous.commit).toBe(installedCommit);
+    expect(isCompleteCandidateVersion(state, previous.versionDir, installedCommit)).toBe(true);
+    const rollbackLink = path.join(previous.versionDir, "node_modules", "root-dep");
+    expect(fs.lstatSync(rollbackLink).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(rollbackLink)).not.toBe(packageDirectory);
+    expect(fs.realpathSync(rollbackLink).toLowerCase()).toContain(path.resolve(previous.versionDir).toLowerCase());
+  });
 });
