@@ -8,6 +8,11 @@ import { cleanup, makeTmpDir } from "./helpers.js";
 
 const tempDirs: string[] = [];
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const LOCAL_COMMIT = "1".repeat(40);
+const REMOTE_COMMIT = "2".repeat(40);
+const OLD_COMMIT = "3".repeat(40);
+const NEW_COMMIT = "4".repeat(40);
+const LINKED_COMMIT = "5".repeat(40);
 
 function prepareSourceCheckout(root: string): void {
   fs.mkdirSync(path.join(root, "dist", "cli"), { recursive: true });
@@ -16,11 +21,12 @@ function prepareSourceCheckout(root: string): void {
   fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
 }
 
-function prepareVersion(root: string, label: string): void {
+function prepareVersion(root: string, label: string, commit = label === "old" ? OLD_COMMIT : NEW_COMMIT): void {
   fs.mkdirSync(path.join(root, "dist", "cli"), { recursive: true });
   fs.writeFileSync(path.join(root, "dist", "cli", "index.js"), label);
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fixture", version: "0.0.0" }));
   fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".c2c-version.json"), JSON.stringify({ schemaVersion: "1.0.0", kind: "source-snapshot", commit }));
 }
 
 afterEach(() => {
@@ -58,10 +64,12 @@ describe("safe update policy", () => {
     const calls: string[] = [];
     const run = (file: string, args: string[], cwd: string) => {
       calls.push(`${file} ${args.join(" ")}`);
-      if (file === "git" && args[0] === "rev-parse") return { status: 0, stdout: "local\n", stderr: "" };
-      if (file === "git" && args[0] === "ls-remote") return { status: 0, stdout: "remote\tHEAD\n", stderr: "" };
+      if (file === "git" && args[0] === "rev-parse") {
+        return { status: 0, stdout: `${cwd.includes("candidates") ? REMOTE_COMMIT : LOCAL_COMMIT}\n`, stderr: "" };
+      }
+      if (file === "git" && args[0] === "ls-remote") return { status: 0, stdout: `${REMOTE_COMMIT}\tHEAD\n`, stderr: "" };
       if (file === "git" && args[0] === "status") return { status: 0, stdout: " M src/index.ts\n?? .env\n", stderr: "" };
-      if (file === "git" && args[0] === "merge-base") return { status: 0, stdout: "local\n", stderr: "" };
+      if (file === "git" && args[0] === "merge-base") return { status: 0, stdout: `${LOCAL_COMMIT}\n`, stderr: "" };
       if (file === "git" && args[0] === "config") return { status: 0, stdout: "https://example.invalid/c2c.git\n", stderr: "" };
       if (file === "git" && args[0] === "clone") {
         const candidate = args.at(-1)!;
@@ -69,6 +77,7 @@ describe("safe update policy", () => {
         fs.writeFileSync(path.join(candidate, "dist", "cli", "index.js"), "candidate");
         fs.writeFileSync(path.join(candidate, "package.json"), JSON.stringify({ name: "fixture", version: "0.0.0" }));
         fs.mkdirSync(path.join(candidate, "node_modules"), { recursive: true });
+        fs.writeFileSync(path.join(candidate, ".c2c-version.json"), JSON.stringify({ schemaVersion: "1.0.0", kind: "source-snapshot", commit: REMOTE_COMMIT }));
         return { status: 0, stdout: "", stderr: "" };
       }
       if (file === "git" && args[0] === "checkout") return { status: 0, stdout: "", stderr: "" };
@@ -141,25 +150,35 @@ describe("safe update policy", () => {
     expect(result.status).toBe("updated");
     expect(result.ok).toBe(true);
     const pointer = JSON.parse(fs.readFileSync(path.join(state, "active-version.json"), "utf8")) as { versionDir: string; commit: string };
-    expect(pointer.commit).toBe("remote");
+    expect(pointer.commit).toBe(REMOTE_COMMIT);
     expect(pointer.versionDir).toContain("candidates");
     const previous = JSON.parse(fs.readFileSync(path.join(state, "previous-version.json"), "utf8")) as { versionDir?: string; commit?: string };
-    expect(previous.commit).toBe("local");
-    expect(previous.versionDir).toContain("source-local-");
+    expect(previous.commit).toBe(LOCAL_COMMIT);
+    expect(previous.versionDir).toContain("source-");
     expect(fake.calls.some((call) => call.includes("git pull") || call.includes("git stash") || call.includes("git reset"))).toBe(false);
   });
 
   it("stages an explicit local candidate through the existing updater path", () => {
     const root = makeTmpDir("safe-update-local-candidate");
+    const installed = makeTmpDir("safe-update-local-installed");
     const state = makeTmpDir("safe-update-local-candidate-state");
-    tempDirs.push(root, state);
+    const installedSkill = path.join(makeTmpDir("safe-update-local-installed-skill"), "SKILL.md");
+    tempDirs.push(root, installed, state, path.dirname(installedSkill));
     fs.mkdirSync(path.join(root, "dist", "cli"), { recursive: true });
     fs.writeFileSync(path.join(root, "dist", "cli", "index.js"), "candidate-entry");
     fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fixture", version: "0.0.0" }));
     fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
-    const git = (...args: string[]) => {
+    fs.mkdirSync(path.join(root, "skill"), { recursive: true });
+    fs.writeFileSync(path.join(root, "skill", "SKILL.md"), "candidate-skill\n");
+    prepareSourceCheckout(installed);
+    fs.writeFileSync(path.join(installed, "dist", "cli", "index.js"), "old-production-entry");
+    fs.writeFileSync(path.join(installed, "local-production-customization.txt"), "keep-local-customization\n");
+    fs.mkdirSync(path.join(installed, "skill"), { recursive: true });
+    fs.writeFileSync(path.join(installed, "skill", "SKILL.md"), "old-production-skill\n");
+    fs.writeFileSync(installedSkill, "old-production-skill\n");
+    const git = (cwd: string, ...args: string[]) => {
       const result = spawnSync("git", args, {
-        cwd: root,
+        cwd,
         encoding: "utf8",
         windowsHide: true,
         env: {
@@ -175,22 +194,45 @@ describe("safe update policy", () => {
       if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
       return result.stdout.toString().trim();
     };
-    git("init", "-b", "main");
-    git("add", "dist", "package.json");
-    git("commit", "-m", "candidate");
-    const candidateCommit = git("rev-parse", "HEAD");
+    git(root, "init", "-b", "main");
+    git(root, "add", "dist", "package.json", "skill");
+    git(root, "commit", "-m", "candidate");
+    const candidateCommit = git(root, "rev-parse", "HEAD");
+    const missingInstalledSource = performSafeUpdate({
+      repoRoot: root,
+      stateDir: state,
+      candidateSourceDir: root,
+      candidateCommit,
+      validate: false,
+    });
+    expect(missingInstalledSource).toMatchObject({ ok: false, status: "blocked" });
+    expect(missingInstalledSource.reason).toContain("--installed-source");
+    git(installed, "init", "-b", "main");
+    git(installed, "add", "dist", "package.json");
+    git(installed, "commit", "-m", "installed");
+    const installedCommit = git(installed, "rev-parse", "HEAD");
     const result = performSafeUpdate({
       repoRoot: root,
       stateDir: state,
       candidateSourceDir: root,
       candidateCommit,
+      installedSourceDir: installed,
+      installedSkillPath: installedSkill,
       validate: false,
       now: new Date("2026-09-03T05:00:00Z"),
     });
     expect(result.ok, result.reason).toBe(true);
     expect(result).toMatchObject({ ok: true, status: "updated", remoteCommit: candidateCommit });
     expect(result.candidateDir).toContain(`local-${candidateCommit.slice(0, 8)}`);
-    expect(git("-C", result.candidateDir!, "rev-parse", "HEAD")).toBe(candidateCommit);
+    expect(git(result.candidateDir!, "rev-parse", "HEAD")).toBe(candidateCommit);
+    const previous = JSON.parse(fs.readFileSync(path.join(state, "previous-version.json"), "utf8")) as { versionDir: string; commit: string };
+    expect(previous.commit).toBe(installedCommit);
+    expect(fs.readFileSync(path.join(previous.versionDir, "dist", "cli", "index.js"), "utf8")).toBe("old-production-entry");
+    expect(fs.readFileSync(path.join(previous.versionDir, "local-production-customization.txt"), "utf8")).toBe("keep-local-customization\n");
+    const rolledBack = rollbackActiveVersion(state, installedSkill);
+    expect(rolledBack).toMatchObject({ ok: true, status: "rolled_back", activeVersion: installedCommit });
+    expect(fs.readFileSync(path.join(JSON.parse(fs.readFileSync(path.join(state, "active-version.json"), "utf8")).versionDir, "dist", "cli", "index.js"), "utf8")).toBe("old-production-entry");
+    expect(fs.readFileSync(installedSkill, "utf8")).toBe("old-production-skill\n");
   });
 
   it("blocks a first update when the installed checkout cannot be staged for rollback", () => {
@@ -216,7 +258,7 @@ describe("safe update policy", () => {
     fs.writeFileSync(path.join(root, "skill", "SKILL.md"), sourceSkill);
     const oldVersion = path.join(state, "candidates", "old");
     prepareVersion(oldVersion, "old");
-    fs.writeFileSync(path.join(state, "active-version.json"), JSON.stringify({ versionDir: oldVersion, commit: "old" }));
+    fs.writeFileSync(path.join(state, "active-version.json"), JSON.stringify({ versionDir: oldVersion, commit: OLD_COMMIT }));
     fs.writeFileSync(installedSkill, `Checkout: ${oldVersion}\n`);
     const fake = fakeRunner();
     const run = (file: string, args: string[], cwd: string) => {
@@ -244,7 +286,7 @@ describe("safe update policy", () => {
     fs.writeFileSync(path.join(root, "skill", "SKILL.md"), "old-skill\n");
     const oldVersion = path.join(state, "candidates", "old");
     prepareVersion(oldVersion, "old");
-    fs.writeFileSync(path.join(state, "active-version.json"), JSON.stringify({ versionDir: oldVersion, commit: "old" }));
+    fs.writeFileSync(path.join(state, "active-version.json"), JSON.stringify({ versionDir: oldVersion, commit: OLD_COMMIT }));
     fs.writeFileSync(installedSkill, "old-skill\n");
     const fake = fakeRunner();
     const run = (file: string, args: string[], cwd: string) => {
@@ -260,7 +302,7 @@ describe("safe update policy", () => {
     expect(updated.status).toBe("updated");
     expect(fs.readFileSync(installedSkill, "utf8")).toBe("new-skill\n");
     const rolledBack = rollbackActiveVersion(state, installedSkill);
-    expect(rolledBack).toMatchObject({ ok: true, status: "rolled_back", activeVersion: "old" });
+    expect(rolledBack).toMatchObject({ ok: true, status: "rolled_back", activeVersion: OLD_COMMIT });
     expect(fs.readFileSync(installedSkill, "utf8")).toBe("old-skill\n");
   });
 
@@ -299,10 +341,10 @@ describe("safe update policy", () => {
       versionDir: string;
       skillBackup?: string | null;
     };
-    expect(previous.versionDir).toContain("source-local-");
+    expect(previous.versionDir).toContain("source-");
     expect(previous.skillBackup).toMatch(/^skill-backups\//);
     const rolledBack = rollbackActiveVersion(state, installedSkill);
-    expect(rolledBack).toMatchObject({ ok: true, status: "rolled_back", activeVersion: "local" });
+    expect(rolledBack).toMatchObject({ ok: true, status: "rolled_back", activeVersion: LOCAL_COMMIT });
     expect(fs.readFileSync(installedSkill, "utf8")).toBe("old-first-skill\n");
   });
 
@@ -360,12 +402,12 @@ describe("safe update policy", () => {
     const newVersion = path.join(state, "candidates", "new");
     prepareVersion(oldVersion, "old");
     prepareVersion(newVersion, "new");
-    fs.writeFileSync(path.join(state, "active-version.json"), JSON.stringify({ versionDir: newVersion, commit: "new" }));
-    fs.writeFileSync(path.join(state, "previous-version.json"), JSON.stringify({ versionDir: oldVersion, commit: "old" }));
+    fs.writeFileSync(path.join(state, "active-version.json"), JSON.stringify({ versionDir: newVersion, commit: NEW_COMMIT }));
+    fs.writeFileSync(path.join(state, "previous-version.json"), JSON.stringify({ versionDir: oldVersion, commit: OLD_COMMIT }));
     const result = rollbackActiveVersion(state, path.join(state, "no-installed-skill.md"));
-    expect(result).toMatchObject({ ok: true, status: "rolled_back", activeVersion: "old" });
-    expect(JSON.parse(fs.readFileSync(path.join(state, "active-version.json"), "utf8")).commit).toBe("old");
-    expect(JSON.parse(fs.readFileSync(path.join(state, "previous-version.json"), "utf8")).commit).toBe("new");
+    expect(result).toMatchObject({ ok: true, status: "rolled_back", activeVersion: OLD_COMMIT });
+    expect(JSON.parse(fs.readFileSync(path.join(state, "active-version.json"), "utf8")).commit).toBe(OLD_COMMIT);
+    expect(JSON.parse(fs.readFileSync(path.join(state, "previous-version.json"), "utf8")).commit).toBe(NEW_COMMIT);
   });
 
   it("rejects rollback through a deep candidate symlink", () => {
@@ -375,17 +417,17 @@ describe("safe update policy", () => {
     const oldVersion = path.join(state, "candidates", "old");
     const linkedVersion = path.join(state, "candidates", "linked");
     prepareVersion(oldVersion, "old");
-    prepareVersion(external, "linked");
+    prepareVersion(external, "linked", LINKED_COMMIT);
     fs.mkdirSync(linkedVersion, { recursive: true });
     try {
       fs.symlinkSync(path.join(external, "dist"), path.join(linkedVersion, "dist"), "junction");
     } catch {
       return;
     }
-    fs.writeFileSync(path.join(state, "active-version.json"), JSON.stringify({ versionDir: linkedVersion, commit: "linked" }));
-    fs.writeFileSync(path.join(state, "previous-version.json"), JSON.stringify({ versionDir: oldVersion, commit: "old" }));
+    fs.writeFileSync(path.join(state, "active-version.json"), JSON.stringify({ versionDir: linkedVersion, commit: LINKED_COMMIT }));
+    fs.writeFileSync(path.join(state, "previous-version.json"), JSON.stringify({ versionDir: oldVersion, commit: OLD_COMMIT }));
     const result = rollbackActiveVersion(state);
     expect(result.status).toBe("blocked");
-    expect(JSON.parse(fs.readFileSync(path.join(state, "active-version.json"), "utf8")).commit).toBe("linked");
+    expect(JSON.parse(fs.readFileSync(path.join(state, "active-version.json"), "utf8")).commit).toBe(LINKED_COMMIT);
   });
 });

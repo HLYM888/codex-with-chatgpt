@@ -57,6 +57,7 @@ import {
 import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import { readCappedUtf8 } from "../execution/input.js";
+import { RECORD_NOTES_TRUNCATION_MARKER, sanitizeExecutionMetadata } from "../execution/sanitize.js";
 import { defaultInstalledSkillPath, performSafeUpdate, rollbackActiveVersion } from "../update/safe-update.js";
 
 const program = new Command();
@@ -87,12 +88,6 @@ function readActiveVersionCommit(): string | null {
 // cap is explicitly marked as source-truncated before it enters the store.
 const MAX_RECORD_OUTPUT_READ = 4 * 1024 * 1024;
 const MAX_RECORD_NOTES_CHARS = 8 * 1024;
-
-function capRecordNotes(value: string | undefined): string | undefined {
-  if (value === undefined || value.length <= MAX_RECORD_NOTES_CHARS) return value;
-  const marker = "\n…[备注已达到 8192 字符安全上限]";
-  return `${value.slice(0, MAX_RECORD_NOTES_CHARS - marker.length)}${marker}`;
-}
 
 function persistWorkspaceEndpoint(opts: {
   workspaceId: string;
@@ -886,10 +881,12 @@ program
   .option("--json", "machine-readable output", false)
   .option("--candidate <path>", "stage and activate an already built local candidate")
   .option("--commit <sha>", "the exact 40-character Git commit of the local candidate")
-  .action((opts: { json: boolean; candidate?: string; commit?: string }) => {
+  .option("--installed-source <path>", "verified installed checkout used as the rollback source")
+  .action((opts: { json: boolean; candidate?: string; commit?: string; installedSource?: string }) => {
     const result = performSafeUpdate({
       repoRoot,
       stateDir: getStateDir(),
+      installedSourceDir: opts.installedSource,
       installedSkillPath: defaultInstalledSkillPath(),
       validate: true,
       allowDirtyCandidate: true,
@@ -1177,7 +1174,9 @@ program
         tests: opts.tests ?? null,
         exitStatus: opts.exitStatus,
         timestamp: new Date().toISOString(),
-        notes: capRecordNotes(opts.notes),
+        notes: opts.notes === undefined
+          ? undefined
+          : sanitizeExecutionMetadata(opts.notes, MAX_RECORD_NOTES_CHARS, RECORD_NOTES_TRUNCATION_MARKER),
         outputId,
         outputAvailable,
       });

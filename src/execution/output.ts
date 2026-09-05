@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
-import { redact } from "../logger/index.js";
-import { sanitizeExecutionOutput } from "./sanitize.js";
+import { sanitizeExecutionMetadata, sanitizeExecutionOutput } from "./sanitize.js";
 
 export const MAX_OUTPUT_RECORDS = 40;
 export const MAX_OUTPUT_PAGE_BYTES = 64 * 1024;
@@ -48,6 +47,7 @@ function readIndex(workspaceId: string): OutputIndex {
     nextId: saved.nextId,
     items: saved.items.map((item) => ({
       ...item,
+      command: sanitizeExecutionMetadata(typeof item.command === "string" ? item.command : "", 200),
       sourceTruncated: Boolean(item.sourceTruncated),
       sourceEncoding: item.sourceEncoding ?? "utf8",
     })),
@@ -138,7 +138,7 @@ export function saveExecutionOutput(workspaceId: string, input: SaveOutputInput)
   const truncated = allowed ? sanitized.truncated || sourceTruncated || stored.truncated : false;
   const meta: ExecutionOutputMeta = {
     id,
-    command: redact(input.command).slice(0, 200),
+    command: sanitizeExecutionMetadata(input.command, 200),
     exitCode: input.exitCode ?? null,
     timestamp,
     taskId: input.taskId,

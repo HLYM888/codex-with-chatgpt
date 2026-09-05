@@ -220,12 +220,15 @@ commands (both are cheap / cached; never mention them unless an update exists):
 负责候选目录、三方合并、测试门槛和原子版本指针。日检仅负责发现版本，不得直接在
 活动目录执行更新；检测到本地改动时只返回 `updateDeferred`，等待明确更新触发。
 
-若老板明确指定一个本地候选版本，必须同时提供该候选的完整 Git 提交；使用
-`node "<candidate>/dist/cli/index.js" update --candidate "<candidate>" --commit "<40-char-sha>" --json`。该路径
-会由同一更新器先核对候选工作树、精确 HEAD 和干净的已跟踪文件，再在 state 目录
-的 `candidates/` 下建立隔离副本，执行与普通更新相同的测试、类型检查和构建，最后
-走同一把更新锁、Skill 备份和原子版本指针流程。不要把工作树路径直接写入活动指针，
-也不要用普通 `c2c update` 把非上游候选重新生成成另一版本。
+若老板明确指定一个本地候选版本，必须同时提供该候选的完整 Git 提交和实际已安装
+checkout 的路径；使用
+`node "<candidate>/dist/cli/index.js" update --candidate "<candidate>" --commit "<40-char-sha>" --installed-source "<installed-checkout>" --json`。
+`--installed-source` 必须是与候选不同、可读取且通过 Git HEAD、入口、package.json
+和依赖树校验的已安装 source；候选自身不能被猜作旧版本来源。该路径会由同一更新器
+先核对候选工作树、精确 HEAD 和干净的已跟踪文件，再在 state 目录的 `candidates/`
+下建立隔离副本，执行与普通更新相同的测试、类型检查和构建，最后走同一把更新锁、
+Skill 备份和原子版本指针流程。不要把工作树路径直接写入活动指针，也不要用普通
+`c2c update` 把非上游候选重新生成成另一版本。
 
 Inside the checkout directory (see Locations):
 

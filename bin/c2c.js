@@ -21,8 +21,8 @@ if (existsSync(activeFile)) {
       !active ||
       typeof active.versionDir !== "string" ||
       typeof active.commit !== "string" ||
-      !active.commit ||
-      !isCompleteCandidateVersion(stateDir, active.versionDir)
+      !/^[0-9a-f]{40}$/i.test(active.commit) ||
+      !isCompleteCandidateVersion(stateDir, active.versionDir, active.commit)
     ) {
       throw new Error("活动版本指针无效或候选版本不完整");
     }

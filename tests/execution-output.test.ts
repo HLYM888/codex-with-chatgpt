@@ -96,6 +96,21 @@ describe("execution output store", () => {
     expect(item.command).toContain("[REDACTED]");
   });
 
+  it("redacts modern project, GitHub, and api_key tokens in command metadata", () => {
+    dirs.push(isolateStateDir());
+    const projectToken = `sk-proj-${"A".repeat(40)}`;
+    const githubToken = `ghp_${"B".repeat(30)}`;
+    const item = saveExecutionOutput("ws1", {
+      command: `run ${projectToken} ${githubToken} api_key=${projectToken}`,
+      raw: "ok",
+      exitCode: 0,
+    });
+    expect(item.command).not.toContain(projectToken);
+    expect(item.command).not.toContain(githubToken);
+    expect(item.command).toContain("api_key=[REDACTED]");
+    expect(item.command).toContain("[REDACTED]");
+  });
+
   it("marks a bounded source file instead of silently hiding the truncation", () => {
     dirs.push(isolateStateDir());
     const item = saveExecutionOutput("ws1", {

@@ -180,8 +180,9 @@ function readSnapshot(repoRoot: string, run: Runner): UpdateSnapshot | null {
   const status = git(repoRoot, ["status", "--porcelain=v1", "--untracked-files=all"], run);
   if (local.status !== 0 || remote.status !== 0 || status.status !== 0) return null;
   const remoteCommit = remote.stdout.trim().split(/\s+/)[0] ?? "";
-  if (!remoteCommit) return null;
-  return { localCommit: local.stdout.trim(), remoteCommit, dirty: status.stdout.trim().length > 0 };
+  const localCommit = local.stdout.trim();
+  if (!FULL_COMMIT.test(localCommit) || !FULL_COMMIT.test(remoteCommit)) return null;
+  return { localCommit, remoteCommit, dirty: status.stdout.trim().length > 0 };
 }
 
 function untrackedFiles(repoRoot: string, run: Runner): string[] {
@@ -271,6 +272,9 @@ type SkillPlan =
   | { action: "update"; content: string }
   | { action: "error"; reason: string };
 
+const FULL_COMMIT = /^[0-9a-f]{40}$/i;
+const VERSION_IDENTITY_FILE = ".c2c-version.json";
+
 type VersionPointer = {
   versionDir?: string;
   commit?: string;
@@ -278,11 +282,190 @@ type VersionPointer = {
   skillBackup?: string | null;
 };
 
+type VersionIdentity = {
+  schemaVersion: "1.0.0";
+  kind: "source-snapshot";
+  commit: string;
+};
+
+function normalizedPath(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function samePath(left: string, right: string): boolean {
+  return normalizedPath(left) === normalizedPath(right);
+}
+
+function regularFile(file: string): boolean {
+  try {
+    const stat = fs.lstatSync(file);
+    return stat.isFile() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function regularDirectory(directory: string): boolean {
+  try {
+    const stat = fs.lstatSync(directory);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function readableDirectory(directory: string): boolean {
+  try {
+    const stat = fs.lstatSync(directory);
+    if (stat.isSymbolicLink()) return fs.statSync(directory).isDirectory();
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function readPackageJson(directory: string): Record<string, unknown> | null {
+  const file = path.join(directory, "package.json");
+  if (!regularFile(file)) return null;
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function dependencyNames(packageJson: Record<string, unknown>): {
+  required: string[];
+  optional: string[];
+} {
+  const names = (value: unknown): string[] =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.keys(value as Record<string, unknown>)
+      : [];
+  const dependencies = names(packageJson.dependencies);
+  const optionalDependencies = names(packageJson.optionalDependencies);
+  const optionalPeerNames = new Set(
+    Object.entries(
+      packageJson.peerDependenciesMeta && typeof packageJson.peerDependenciesMeta === "object"
+        ? packageJson.peerDependenciesMeta as Record<string, unknown>
+        : {}
+    )
+      .filter(([, meta]) => meta && typeof meta === "object" && (meta as Record<string, unknown>).optional === true)
+      .map(([name]) => name)
+  );
+  const peers = names(packageJson.peerDependencies);
+  const optional = [...new Set([...optionalDependencies, ...peers.filter((name) => optionalPeerNames.has(name))])];
+  const optionalSet = new Set(optional);
+  return {
+    required: [...new Set([...dependencies, ...peers].filter((name) => !optionalSet.has(name)))],
+    optional,
+  };
+}
+
+function safePackageName(name: string): boolean {
+  return /^@?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)?$/.test(name);
+}
+
+function resolvePackageDirectory(fromDirectory: string, packageName: string): string | null {
+  if (!safePackageName(packageName)) return null;
+  let current = path.resolve(fromDirectory);
+  while (true) {
+    const candidate = path.join(current, "node_modules", packageName);
+    if (readableDirectory(candidate) && regularFile(path.join(candidate, "package.json"))) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function hasCompleteDependencyTree(root: string): boolean {
+  const packageJson = readPackageJson(root);
+  if (!packageJson) return false;
+  const rootDependencies = dependencyNames(packageJson);
+  if (
+    rootDependencies.required.length === 0 &&
+    rootDependencies.optional.length === 0
+  ) return true;
+  if (!readableDirectory(path.join(root, "node_modules"))) return false;
+  const visited = new Set<string>();
+  const verify = (directory: string, requiredBy: string): boolean => {
+    let realDirectory: string;
+    try {
+      realDirectory = fs.realpathSync(directory);
+    } catch {
+      return false;
+    }
+    if (visited.has(realDirectory)) return true;
+    visited.add(realDirectory);
+    const current = readPackageJson(directory);
+    if (!current) return false;
+    const { required, optional } = dependencyNames(current);
+    for (const name of required) {
+      const resolved = resolvePackageDirectory(directory, name);
+      if (!resolved || !verify(resolved, `${requiredBy} -> ${name}`)) return false;
+    }
+    for (const name of optional) {
+      const resolved = resolvePackageDirectory(directory, name);
+      if (resolved && !verify(resolved, `${requiredBy} -> ${name}`)) return false;
+    }
+    return true;
+  };
+  return verify(root, "root");
+}
+
+function readGitHead(directory: string, run: Runner): string | null {
+  const result = git(directory, ["rev-parse", "HEAD"], run);
+  const head = result.stdout.trim();
+  return result.status === 0 && FULL_COMMIT.test(head) ? head : null;
+}
+
+function writeSourceSnapshotIdentity(directory: string, commit: string): void {
+  const identity: VersionIdentity = { schemaVersion: "1.0.0", kind: "source-snapshot", commit };
+  atomicWrite(path.join(directory, VERSION_IDENTITY_FILE), JSON.stringify(identity, null, 2));
+}
+
+function candidateIdentityMatches(directory: string, expectedCommit: string, run: Runner): boolean {
+  if (!FULL_COMMIT.test(expectedCommit)) return false;
+  const gitMetadata = path.join(directory, ".git");
+  let hasGitMetadata = false;
+  try {
+    fs.lstatSync(gitMetadata);
+    hasGitMetadata = true;
+  } catch {
+    /* materialized source snapshots intentionally have no .git metadata */
+  }
+  if (hasGitMetadata) {
+    const head = readGitHead(directory, run);
+    return head !== null && head.toLowerCase() === expectedCommit.toLowerCase();
+  }
+  const identityFile = path.join(directory, VERSION_IDENTITY_FILE);
+  if (!regularFile(identityFile)) return false;
+  try {
+    const identity = JSON.parse(fs.readFileSync(identityFile, "utf8")) as Partial<VersionIdentity>;
+    return identity.schemaVersion === "1.0.0" && identity.kind === "source-snapshot" && identity.commit?.toLowerCase() === expectedCommit.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+function validateInstalledSource(sourceDir: string, run: Runner): { root: string; head: string } | null {
+  const root = path.resolve(sourceDir);
+  if (!regularDirectory(root)) return null;
+  const top = git(root, ["rev-parse", "--show-toplevel"], run);
+  const head = readGitHead(root, run);
+  if (top.status !== 0 || !head || !samePath(top.stdout.trim(), root)) return null;
+  if (!regularFile(path.join(root, "dist", "cli", "index.js")) || !readPackageJson(root)) return null;
+  if (!hasCompleteDependencyTree(root)) return null;
+  return { root, head };
+}
+
 function copyCurrentVersionTree(sourceDir: string, targetDir: string, relative = ""): void {
   const currentSource = relative ? path.join(sourceDir, relative) : sourceDir;
   for (const entry of fs.readdirSync(currentSource, { withFileTypes: true })) {
     const child = relative ? path.join(relative, entry.name) : entry.name;
-    if (entry.name === ".git" || entry.name === ".local" || entry.name === "node_modules") continue;
+    if (entry.name === ".git" || entry.name === ".local" || entry.name === "node_modules" || entry.name === VERSION_IDENTITY_FILE) continue;
     if (!safeRelativePath(child) || pathHasSymlink(sourceDir, child)) continue;
     const source = path.join(currentSource, entry.name);
     const target = path.join(targetDir, child);
@@ -326,7 +509,12 @@ function materializeSourceVersion(repoRoot: string, stateDir: string, sourceComm
   try {
     fs.mkdirSync(candidateDir, { recursive: true });
     copyCurrentVersionTree(repoRoot, candidateDir);
-    if (!linkCurrentDependencies(repoRoot, candidateDir) || !isCompleteCandidateVersion(stateDir, candidateDir)) {
+    if (!linkCurrentDependencies(repoRoot, candidateDir)) {
+      fs.rmSync(candidateDir, { recursive: true, force: true });
+      return null;
+    }
+    writeSourceSnapshotIdentity(candidateDir, sourceCommit);
+    if (!isCompleteCandidateVersion(stateDir, candidateDir, sourceCommit)) {
       fs.rmSync(candidateDir, { recursive: true, force: true });
       return null;
     }
@@ -428,7 +616,7 @@ function restoreFile(file: string, existed: boolean, content: string | null): vo
   else fs.rmSync(file, { force: true });
 }
 
-export function isCompleteCandidateVersion(stateDir: string, versionDir: string): boolean {
+export function isCompleteCandidateVersion(stateDir: string, versionDir: string, expectedCommit?: string): boolean {
   const root = path.resolve(stateDir);
   const candidateRoot = path.resolve(root, "candidates") + path.sep;
   const resolved = path.resolve(versionDir);
@@ -444,13 +632,17 @@ export function isCompleteCandidateVersion(stateDir: string, versionDir: string)
     const versionStat = fs.lstatSync(resolved);
     const entryStat = fs.lstatSync(entry);
     const packageStat = fs.lstatSync(path.join(resolved, "package.json"));
-    return (
+    if (
       versionStat.isDirectory() &&
       entryStat.isFile() &&
       !entryStat.isSymbolicLink() &&
       packageStat.isFile() &&
       !packageStat.isSymbolicLink()
-    );
+    ) {
+      if (!hasCompleteDependencyTree(resolved)) return false;
+      return expectedCommit === undefined || candidateIdentityMatches(resolved, expectedCommit, defaultRunner);
+    }
+    return false;
   } catch {
     return false;
   }
@@ -515,6 +707,7 @@ interface CandidateActivationOptions {
   candidateDir: string;
   candidateCommit: string;
   sourceCommit: string;
+  installedSourceDir?: string;
   installedSkillPath?: string;
   now?: Date;
   localCommit?: string;
@@ -527,7 +720,7 @@ function activateCandidateUnlocked(options: CandidateActivationOptions): SafeUpd
   const remoteCommit = options.candidateCommit;
   const candidateDir = path.resolve(options.candidateDir);
   const skippedUntracked = options.skippedUntracked;
-  if (!isCompleteCandidateVersion(options.stateDir, candidateDir)) {
+  if (!isCompleteCandidateVersion(options.stateDir, candidateDir, options.candidateCommit)) {
     return {
       ok: false,
       status: "blocked",
@@ -552,11 +745,11 @@ function activateCandidateUnlocked(options: CandidateActivationOptions): SafeUpd
     } catch {
       return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: "当前活动版本指针无法读取，未自动切换。" };
     }
-    if (!previous || typeof previous.versionDir !== "string" || typeof previous.commit !== "string" || !isCompleteCandidateVersion(options.stateDir, previous.versionDir)) {
+    if (!previous || typeof previous.versionDir !== "string" || typeof previous.commit !== "string" || !FULL_COMMIT.test(previous.commit) || !isCompleteCandidateVersion(options.stateDir, previous.versionDir, previous.commit)) {
       return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: "当前活动版本不是可验证候选，未自动切换。" };
     }
   } else {
-    previous = materializeSourceVersion(options.repoRoot, options.stateDir, options.sourceCommit, now);
+    previous = materializeSourceVersion(options.installedSourceDir ?? options.repoRoot, options.stateDir, options.sourceCommit, now);
     if (!previous) {
       return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: "没有可验证的旧版本候选，未自动切换。" };
     }
@@ -626,6 +819,7 @@ function activateCandidateUnlocked(options: CandidateActivationOptions): SafeUpd
 export function performSafeUpdate(options: {
   repoRoot: string;
   stateDir: string;
+  installedSourceDir?: string;
   installedSkillPath?: string;
   run?: Runner;
   now?: Date;
@@ -651,6 +845,7 @@ export function performSafeUpdate(options: {
 function performSafeUpdateUnlocked(options: {
   repoRoot: string;
   stateDir: string;
+  installedSourceDir?: string;
   installedSkillPath?: string;
   run?: Runner;
   now?: Date;
@@ -662,32 +857,49 @@ function performSafeUpdateUnlocked(options: {
   const repoRoot = path.resolve(options.repoRoot);
   const run = options.run ?? defaultRunner;
   if (options.candidateSourceDir !== undefined || options.candidateCommit !== undefined) {
-    const sourceHead = git(repoRoot, ["rev-parse", "HEAD"], run);
     const candidateCommit = options.candidateCommit?.trim() ?? "";
-    if (sourceHead.status !== 0 || !options.candidateSourceDir || !/^[0-9a-f]{40}$/i.test(candidateCommit)) {
+    if (!options.candidateSourceDir || !FULL_COMMIT.test(candidateCommit)) {
       return { ok: false, status: "blocked", reason: "本地候选必须提供可验证的完整 Git 提交，当前版本未改变。" };
     }
-    const staged = stageLocalCandidate(options.candidateSourceDir, options.stateDir, candidateCommit, run, options.now ?? new Date());
+    const candidateSourceDir = path.resolve(options.candidateSourceDir);
+    const candidateHead = readGitHead(candidateSourceDir, run);
+    if (!candidateHead || candidateHead.toLowerCase() !== candidateCommit.toLowerCase()) {
+      return { ok: false, status: "blocked", remoteCommit: candidateCommit, reason: "本地候选的 Git HEAD 与指定提交不一致，当前版本未改变。" };
+    }
+    const installedSourceDir = options.installedSourceDir
+      ? path.resolve(options.installedSourceDir)
+      : samePath(repoRoot, candidateSourceDir)
+        ? null
+        : repoRoot;
+    if (!installedSourceDir || samePath(installedSourceDir, candidateSourceDir)) {
+      return { ok: false, status: "blocked", localCommit: candidateHead, remoteCommit: candidateCommit, reason: "从候选 checkout 执行本地更新时必须显式提供不同的 --installed-source；未猜测旧版本来源。" };
+    }
+    const installed = validateInstalledSource(installedSourceDir, run);
+    if (!installed) {
+      return { ok: false, status: "blocked", localCommit: candidateHead, remoteCommit: candidateCommit, reason: "已安装 source 不是可验证的 Git checkout，或入口、package.json、依赖树不完整；当前版本未改变。" };
+    }
+    const staged = stageLocalCandidate(candidateSourceDir, options.stateDir, candidateCommit, run, options.now ?? new Date());
     if (!staged) {
-      return { ok: false, status: "blocked", localCommit: sourceHead.stdout.trim(), remoteCommit: candidateCommit, reason: "本地候选未通过路径、Git 身份或干净工作树校验，当前版本未改变。" };
+      return { ok: false, status: "blocked", localCommit: installed.head, remoteCommit: candidateCommit, reason: "本地候选未通过路径、Git 身份或干净工作树校验，当前版本未改变。" };
     }
     if (options.validate !== false) {
       for (const [file, args] of validationCommands()) {
         const result = run(file, args, staged, 600_000);
         if (result.status !== 0) {
-          return { ok: false, status: "validation_failed", localCommit: sourceHead.stdout.trim(), remoteCommit: candidateCommit, candidateDir: staged, reason: `候选验证失败：${file} ${args.join(" ")}` };
+          return { ok: false, status: "validation_failed", localCommit: installed.head, remoteCommit: candidateCommit, candidateDir: staged, reason: `候选验证失败：${file} ${args.join(" ")}` };
         }
       }
     }
     return activateCandidateUnlocked({
-      repoRoot,
+      repoRoot: candidateSourceDir,
       stateDir: options.stateDir,
       candidateDir: staged,
       candidateCommit,
-      sourceCommit: sourceHead.stdout.trim(),
+      sourceCommit: installed.head,
+      installedSourceDir: installed.root,
       installedSkillPath: options.installedSkillPath,
       now: options.now,
-      localCommit: sourceHead.stdout.trim(),
+      localCommit: installed.head,
     });
   }
   const snapshot = readSnapshot(repoRoot, run);
@@ -749,7 +961,7 @@ function performSafeUpdateUnlocked(options: {
       }
     }
   }
-  if (!isCompleteCandidateVersion(options.stateDir, candidateDir)) {
+  if (!isCompleteCandidateVersion(options.stateDir, candidateDir, snapshot.remoteCommit)) {
     return { ok: false, status: "blocked", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: "候选入口或依赖不完整，未自动切换。" };
   }
 
@@ -800,16 +1012,16 @@ function rollbackActiveVersionUnlocked(stateDir: string, installedSkillPath: str
   } catch {
     return { ok: false, status: "blocked", reason: "版本指针文件无法读取，未执行回滚。" };
   }
-  if (!active || typeof active.versionDir !== "string" || typeof active.commit !== "string") {
+  if (!active || typeof active.versionDir !== "string" || typeof active.commit !== "string" || !FULL_COMMIT.test(active.commit)) {
     return { ok: false, status: "blocked", reason: "当前活动版本指针不完整，未执行回滚。" };
   }
-  if (!previous || typeof previous.versionDir !== "string" || typeof previous.commit !== "string") {
+  if (!previous || typeof previous.versionDir !== "string" || typeof previous.commit !== "string" || !FULL_COMMIT.test(previous.commit)) {
     return { ok: false, status: "unavailable", reason: "没有可回滚的完整旧版本。" };
   }
-  if (!isCompleteCandidateVersion(root, active.versionDir)) {
+  if (!isCompleteCandidateVersion(root, active.versionDir, active.commit)) {
     return { ok: false, status: "blocked", reason: "当前活动版本目录不存在或不完整，未执行回滚。" };
   }
-  if (!isCompleteCandidateVersion(root, previous.versionDir)) {
+  if (!isCompleteCandidateVersion(root, previous.versionDir, previous.commit)) {
     return { ok: false, status: "blocked", reason: "旧版本目录不存在或不完整，未执行回滚。" };
   }
   let currentSkill: string | null = null;

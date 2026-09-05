@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, getStateDir } from "../config/paths.js";
+import { RECORD_NOTES_TRUNCATION_MARKER, sanitizeExecutionMetadata } from "./sanitize.js";
+
+const MAX_RECORD_NOTES_BYTES = 8 * 1024;
 
 /**
  * Lightweight execution records written by the Codex harness after each
@@ -27,7 +30,10 @@ function recordsFile(workspaceId: string): string {
 
 export function appendExecutionRecord(workspaceId: string, record: ExecutionRecord): void {
   const file = recordsFile(workspaceId);
-  fs.appendFileSync(file, JSON.stringify(record) + "\n", { mode: 0o600 });
+  const safeRecord = record.notes === undefined
+    ? record
+    : { ...record, notes: sanitizeExecutionMetadata(record.notes, MAX_RECORD_NOTES_BYTES, RECORD_NOTES_TRUNCATION_MARKER) };
+  fs.appendFileSync(file, JSON.stringify(safeRecord) + "\n", { mode: 0o600 });
 }
 
 export function readExecutionRecords(workspaceId: string, limit = 10): ExecutionRecord[] {
@@ -37,7 +43,12 @@ export function readExecutionRecords(workspaceId: string, limit = 10): Execution
   const records: ExecutionRecord[] = [];
   for (const line of lines.slice(-limit)) {
     try {
-      records.push(JSON.parse(line) as ExecutionRecord);
+      const record = JSON.parse(line) as ExecutionRecord;
+      records.push(
+        record.notes === undefined
+          ? record
+          : { ...record, notes: sanitizeExecutionMetadata(record.notes, MAX_RECORD_NOTES_BYTES, RECORD_NOTES_TRUNCATION_MARKER) }
+      );
     } catch {
       // skip corrupt lines
     }

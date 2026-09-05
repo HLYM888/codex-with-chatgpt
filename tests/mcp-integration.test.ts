@@ -162,11 +162,16 @@ describe("MCP tools over Streamable HTTP", () => {
       tests: "27 passed",
       exitStatus: "ok",
       timestamp: new Date().toISOString(),
+      notes: `review api_key=sk-proj-${"A".repeat(40)} ghp_${"B".repeat(30)}`,
     });
-    const summary = jsonOf<{ records: { taskId: string }[] }>(
+    const summary = jsonOf<{ records: { taskId: string; notes?: string }[] }>(
       await client.callTool({ name: "execution_summary", arguments: {} })
     );
     expect(summary.records[0].taskId).toBe("c2c_test1");
+    expect(summary.records[0].notes).not.toContain("sk-proj-");
+    expect(summary.records[0].notes).not.toContain("ghp_");
+    expect(summary.records[0].notes).toContain("api_key=[REDACTED]");
+    expect(summary.records[0].notes).toContain("[REDACTED]");
 
     const status = jsonOf<{ available: boolean; tests: string; outputAvailable: boolean; outputId: number | null }>(
       await client.callTool({ name: "test_status", arguments: {} })

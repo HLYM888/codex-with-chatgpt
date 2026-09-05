@@ -46,6 +46,30 @@ function applyExtraRedact(text: string): string {
   return out;
 }
 
+function capMetadataUtf8(value: string, maxBytes: number, marker?: string): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= maxBytes) return value;
+  const markerBytes = marker ? Buffer.byteLength(marker, "utf8") : 0;
+  let end = Math.max(0, Math.floor(maxBytes) - markerBytes);
+  while (end > 0) {
+    try {
+      const prefix = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end));
+      return marker ? `${prefix}${marker}` : prefix;
+    } catch {
+      end -= 1;
+    }
+  }
+  return marker && markerBytes <= maxBytes ? marker : "";
+}
+
+export const RECORD_NOTES_TRUNCATION_MARKER = "\n…[备注已达到 8192 字节安全上限]";
+
+/** Redact metadata before it is persisted or returned through a read API. */
+export function sanitizeExecutionMetadata(raw: string, maxBytes: number, truncationMarker?: string): string {
+  if (HARD_REJECT.some((pattern) => pattern.test(raw))) return "[RESTRICTED: private_key]";
+  return capMetadataUtf8(redactHomePaths(applyExtraRedact(redact(raw))), maxBytes, truncationMarker);
+}
+
 function truncate(text: string): { text: string; truncated: boolean } {
   const lines = text.split(/\r?\n/);
   let truncated = false;
