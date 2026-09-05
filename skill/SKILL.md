@@ -1,8 +1,8 @@
 ---
 name: codex-with-chatgpt
 description: >
-  Use ChatGPT (web) as the planning and review brain for Codex coding sessions,
-  while Codex keeps full execution ownership. Use when the user says
+  Coordinate planning, implementation and review between ChatGPT (web) and Codex
+  according to verified tools and permissions, with Codex owning integration. Use when the user says
   "使用 Codex with ChatGPT ..." / "Set up Codex with ChatGPT" / "用 ChatGPT 规划",
   when they ask to connect ChatGPT to the current workspace, disconnect it,
   or run a task through the ChatGPT planning loop.
@@ -10,13 +10,54 @@ description: >
 
 # Codex with ChatGPT
 
-ChatGPT thinks. Codex works.
-
-You (Codex) own execution: editing, shell, git, tests, recovery.
-ChatGPT owns high-level reasoning: understanding, planning, review, debug strategy.
+Both ChatGPT and Codex can execute work supported by their current tools.
+You (Codex) own overall progress, local integration and final verification.
+ChatGPT can deliver implementation, computations, artifacts, analysis and review;
+do not restrict it to planning merely because this bridge is read-only.
 The C2C Bridge gives ChatGPT read-only MCP access to the current workspace, so
 control messages between you and ChatGPT stay tiny (< 1 KB) — ChatGPT pulls
 whatever data it needs by itself.
+
+## Capability-based execution sharing
+
+Before assigning a new kind of work, distinguish documented product support,
+tools exposed in this conversation, and capabilities verified by a real result.
+Reuse an unchanged capability receipt; recheck after a model, mode, connection
+or permission change. A tool name or self-reported capability is not execution
+evidence. C2C `test_status` reads results; it does not execute tests. Native
+ChatGPT tools and other already-authorized connectors have their own boundaries.
+
+Give ChatGPT an independent deliverable with exact inputs/version, output,
+allowed actions and acceptance criteria. Examples include a source-bound patch,
+a complete replacement document, a computed reconciliation, synthetic test cases
+or a benchmark prototype. If its current runtime supports files or code execution,
+let it create and validate the artifact there. If it can only draft code, record
+that limitation and run the code through Codex before adopting it. Prefer an
+existing authorized artifact channel; never make the user transfer files or
+copy long prompts. Do not claim a draft changed the local checkout or GitHub.
+
+Assign separate write domains. A ChatGPT execution package cannot simultaneously
+serve as its own independent audit. Integrate its output once, verify the actual
+diff/results, and record remaining gaps instead of repeating the whole task.
+Direct remote edits require an available write tool and the same exact branch,
+path, writer and external-action authority as any other executor. Read-only C2C
+access does not grant a shell or arbitrary local write capability.
+
+Optimize useful work, not quota consumption. ChatGPT Work and Codex share usage
+limits; moving work to Work does not create a second Codex allowance. Ordinary
+Chat, tool-specific limits and actual account availability must be checked
+separately. Do not infer remaining Chat usage from Codex's usage counter, switch
+modes silently, bypass limits, or repeat work just to spend another allowance.
+Official reference, verified 2026-09-05:
+https://learn.chatgpt.com/docs/pricing
+
+When asked to audit and improve repositories, require caller/export/dynamic-use
+evidence before removing code, preserve meaningful failure-path tests, and use
+representative before/after measurements for performance changes. Audit open
+PRs and issues by exact candidate and dependencies, not closure counts. For
+stalled work, preserve the existing candidate and diagnose the loop before
+choosing a fresh isolated implementation. Merge and production decisions remain
+bound to the user's actual authorization and verified delivery conditions.
 
 ## Instruction scope
 
@@ -581,14 +622,14 @@ Project. Do **not** click the ChatGPT sidebar to create the Project
 ### Project instructions (paste into 项目设置 → 指令)
 
 ```
-你是当前绑定工作区的规划与复核层，Codex 负责执行；连接可见范围不等于项目授权。
+你与 Codex 按实际工具能力共同规划、执行和复核，Codex 负责本地集成与最终验证；连接可见范围不等于项目授权。可独立完成的代码、文档、计算或验证应交付具体成果，不只提供计划。
 
 本项目仅绑定到：
 - 工作区名称：{{workspace_name}}
 - 类型：{{project_type}}（{{languages}} / {{frameworks}}）
 - 连接（只能使用这个）：{{connector_name}}
 
-调用工具时只能使用上述连接，不得使用其他 Codex with ChatGPT 连接。
+访问绑定工作区时只能使用上述连接，不得使用其他 Codex with ChatGPT 连接。用户已授权任务所需的原生计算、文件生成或检索工具可以使用；其他连接须已有相应授权。此连接为只读，不能声称通过它执行命令或改写本地文件。
 先核对 workspace_info 的实际身份；Git 项目还须用当前 Git 状态确认仓库和分支。名称相同不能证明是同一仓库或获准写入。存在项目级 Order、登记表或路径合同才按其实际规则读取和核验；普通非 Git 工作区不强制创建公司治理文件。身份不符时停止依赖该连接的动作，不猜测其他项目。
 
 通过该连接读取代码、Git 状态、差异和已允许读取的命令输出。不得要求任何人粘贴文件正文、差异或日志。
@@ -682,8 +723,12 @@ INSTRUCTION:
    “请补充计划依据，并给出具体的逐文件修改建议。”
    Then:
    `c2c session set -w <ws> --protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`
-4. Execute the plan yourself with your own harness (your tools, your judgment;
-   ChatGPT does not micro-manage tool calls).
+4. Split the accepted work by verified capability and independent deliverable.
+   Let ChatGPT execute its bounded package with available authorized tools;
+   execute the local/integration package in Codex. Follow **Capability-based
+   execution sharing** and do not create a second writer for the same files.
+   If no suitable ChatGPT execution tool is available, adopt its concrete draft
+   only after local validation and report the capability gap explicitly.
    Before you start:
    `c2c session set -w <ws> --protocol-state EXECUTING --waiting-for none --next-step "finish PLAN then record"`
 5. Record the execution so ChatGPT can read it via MCP. Metadata always:
