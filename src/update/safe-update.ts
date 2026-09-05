@@ -271,6 +271,118 @@ type SkillPlan =
   | { action: "update"; content: string }
   | { action: "error"; reason: string };
 
+type VersionPointer = {
+  versionDir?: string;
+  commit?: string;
+  updatedAt?: string;
+  skillBackup?: string | null;
+};
+
+function copyCurrentVersionTree(sourceDir: string, targetDir: string, relative = ""): void {
+  const currentSource = relative ? path.join(sourceDir, relative) : sourceDir;
+  for (const entry of fs.readdirSync(currentSource, { withFileTypes: true })) {
+    const child = relative ? path.join(relative, entry.name) : entry.name;
+    if (entry.name === ".git" || entry.name === ".local" || entry.name === "node_modules") continue;
+    if (!safeRelativePath(child) || pathHasSymlink(sourceDir, child)) continue;
+    const source = path.join(currentSource, entry.name);
+    const target = path.join(targetDir, child);
+    const stat = fs.lstatSync(source);
+    if (stat.isDirectory()) {
+      fs.mkdirSync(target, { recursive: true });
+      copyCurrentVersionTree(sourceDir, targetDir, child);
+    } else if (stat.isFile()) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(source, target);
+    }
+  }
+}
+
+function linkCurrentDependencies(sourceDir: string, targetDir: string): boolean {
+  const source = path.join(sourceDir, "node_modules");
+  if (!fs.existsSync(source)) return false;
+  const target = path.join(targetDir, "node_modules");
+  try {
+    const stat = fs.lstatSync(source);
+    if (stat.isSymbolicLink()) {
+      const resolved = fs.realpathSync(source);
+      fs.symlinkSync(resolved, target, process.platform === "win32" ? "junction" : "dir");
+    } else if (stat.isDirectory()) {
+      fs.cpSync(source, target, { recursive: true, dereference: false, errorOnExist: true });
+    } else {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function materializeSourceVersion(repoRoot: string, stateDir: string, sourceCommit: string, now: Date): VersionPointer | null {
+  const sourceEntry = path.join(repoRoot, "dist", "cli", "index.js");
+  const sourcePackage = path.join(repoRoot, "package.json");
+  if (!fs.existsSync(sourceEntry) || !fs.existsSync(sourcePackage)) return null;
+  const stamp = now.toISOString().replaceAll(/[-:.TZ]/g, "").slice(0, 14);
+  const candidateDir = path.join(stateDir, "candidates", `${stamp}-source-${sourceCommit.slice(0, 8)}-${randomBytes(3).toString("hex")}`);
+  try {
+    fs.mkdirSync(candidateDir, { recursive: true });
+    copyCurrentVersionTree(repoRoot, candidateDir);
+    if (!linkCurrentDependencies(repoRoot, candidateDir) || !isCompleteCandidateVersion(stateDir, candidateDir)) {
+      fs.rmSync(candidateDir, { recursive: true, force: true });
+      return null;
+    }
+    return { versionDir: candidateDir, commit: sourceCommit, updatedAt: now.toISOString() };
+  } catch {
+    try {
+      fs.rmSync(candidateDir, { recursive: true, force: true });
+    } catch {
+      /* preserve a failed candidate for manual review if cleanup is blocked */
+    }
+    return null;
+  }
+}
+
+function readSkillContent(file: string): string | null {
+  if (!fs.existsSync(file)) return null;
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("已安装 Skill 不是正规文件");
+  return fs.readFileSync(file, "utf8");
+}
+
+function skillBackupPath(stateDir: string, relative: string): string | null {
+  const root = path.resolve(stateDir);
+  const resolved = path.resolve(root, relative);
+  const backupRoot = path.resolve(root, "skill-backups") + path.sep;
+  const normalized = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  const normalizedRoot = process.platform === "win32" ? backupRoot.toLowerCase() : backupRoot;
+  if (!normalized.startsWith(normalizedRoot) || pathHasSymlink(root, path.relative(root, resolved))) return null;
+  return resolved;
+}
+
+function writeSkillBackup(stateDir: string, content: string | null, label: string): string | null {
+  if (content === null) return null;
+  const safeLabel = label.replaceAll(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "version";
+  const relative = path.join("skill-backups", `${safeLabel}-${randomBytes(3).toString("hex")}.md`);
+  const file = path.resolve(stateDir, relative);
+  atomicWrite(file, content);
+  return relative.replaceAll("\\", "/");
+}
+
+function restoreSkillBackup(stateDir: string, pointer: VersionPointer, installedSkillPath: string): void {
+  if (pointer.skillBackup === undefined) {
+    if (fs.existsSync(installedSkillPath)) throw new Error("版本没有可验证的 Skill 回退绑定");
+    return;
+  }
+  if (pointer.skillBackup === null) {
+    fs.rmSync(installedSkillPath, { force: true });
+    return;
+  }
+  const backup = skillBackupPath(stateDir, pointer.skillBackup);
+  if (!backup || !fs.existsSync(backup)) throw new Error("版本绑定的 Skill 备份不存在或不安全");
+  const stat = fs.lstatSync(backup);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("版本绑定的 Skill 备份不是正规文件");
+  atomicWrite(installedSkillPath, fs.readFileSync(backup, "utf8"));
+}
+
 function normalizeSkillContent(value: string, roots: string[]): string {
   let normalized = value.replaceAll("\r\n", "\n");
   for (const root of roots) {
@@ -316,11 +428,13 @@ function restoreFile(file: string, existed: boolean, content: string | null): vo
   else fs.rmSync(file, { force: true });
 }
 
-function isCompleteCandidateVersion(stateDir: string, versionDir: string): boolean {
+export function isCompleteCandidateVersion(stateDir: string, versionDir: string): boolean {
   const root = path.resolve(stateDir);
   const candidateRoot = path.resolve(root, "candidates") + path.sep;
   const resolved = path.resolve(versionDir);
-  if (!resolved.startsWith(candidateRoot)) return false;
+  const normalizedResolved = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  const normalizedCandidateRoot = process.platform === "win32" ? candidateRoot.toLowerCase() : candidateRoot;
+  if (!normalizedResolved.startsWith(normalizedCandidateRoot)) return false;
   const relative = path.relative(root, resolved);
   if (!relative || pathHasSymlink(root, relative)) return false;
   const entry = path.join(resolved, "dist", "cli", "index.js");
@@ -329,10 +443,184 @@ function isCompleteCandidateVersion(stateDir: string, versionDir: string): boole
   try {
     const versionStat = fs.lstatSync(resolved);
     const entryStat = fs.lstatSync(entry);
-    return versionStat.isDirectory() && entryStat.isFile() && !entryStat.isSymbolicLink();
+    const packageStat = fs.lstatSync(path.join(resolved, "package.json"));
+    return (
+      versionStat.isDirectory() &&
+      entryStat.isFile() &&
+      !entryStat.isSymbolicLink() &&
+      packageStat.isFile() &&
+      !packageStat.isSymbolicLink()
+    );
   } catch {
     return false;
   }
+}
+
+function stageLocalCandidate(
+  sourceDir: string,
+  stateDir: string,
+  candidateCommit: string,
+  run: Runner,
+  now: Date,
+): string | null {
+  const source = path.resolve(sourceDir);
+  const candidatesRoot = path.resolve(stateDir, "candidates");
+  if (!/^[0-9a-f]{40}$/i.test(candidateCommit)) return null;
+  try {
+    const sourceStat = fs.lstatSync(source);
+    if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) return null;
+    if (fs.existsSync(candidatesRoot) && pathHasSymlink(stateDir, "candidates")) return null;
+    const top = git(source, ["rev-parse", "--show-toplevel"], run);
+    const head = git(source, ["rev-parse", "HEAD"], run);
+    const trackedStatus = git(source, ["status", "--porcelain=v1", "--untracked-files=no"], run);
+    const normalizedSource = process.platform === "win32" ? source.toLowerCase() : source;
+    const normalizedTop = process.platform === "win32" ? path.resolve(top.stdout.trim()).toLowerCase() : path.resolve(top.stdout.trim());
+    if (
+      top.status !== 0 ||
+      normalizedTop !== normalizedSource ||
+      head.status !== 0 ||
+      head.stdout.trim().toLowerCase() !== candidateCommit.toLowerCase() ||
+      trackedStatus.status !== 0 ||
+      trackedStatus.stdout.trim()
+    ) return null;
+  } catch {
+    return null;
+  }
+
+  const stamp = now.toISOString().replaceAll(/[-:.TZ]/g, "").slice(0, 14);
+  const target = path.join(candidatesRoot, `${stamp}-local-${candidateCommit.slice(0, 8)}-${randomBytes(3).toString("hex")}`);
+  try {
+    fs.mkdirSync(candidatesRoot, { recursive: true });
+    const clone = run("git", ["clone", "--no-checkout", "--no-local", source, target], source, 300_000);
+    if (clone.status !== 0) throw new Error("local candidate clone failed");
+    const checkout = git(target, ["checkout", "--detach", candidateCommit], run);
+    const clonedHead = git(target, ["rev-parse", "HEAD"], run);
+    if (checkout.status !== 0 || clonedHead.status !== 0 || clonedHead.stdout.trim().toLowerCase() !== candidateCommit.toLowerCase()) {
+      throw new Error("local candidate identity changed during staging");
+    }
+    return target;
+  } catch {
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+    } catch {
+      /* preserve an incomplete candidate for manual review if cleanup is blocked */
+    }
+    return null;
+  }
+}
+
+interface CandidateActivationOptions {
+  repoRoot: string;
+  stateDir: string;
+  candidateDir: string;
+  candidateCommit: string;
+  sourceCommit: string;
+  installedSkillPath?: string;
+  now?: Date;
+  localCommit?: string;
+  skippedUntracked?: string[];
+}
+
+function activateCandidateUnlocked(options: CandidateActivationOptions): SafeUpdateResult {
+  const now = options.now ?? new Date();
+  const localCommit = options.localCommit ?? options.sourceCommit;
+  const remoteCommit = options.candidateCommit;
+  const candidateDir = path.resolve(options.candidateDir);
+  const skippedUntracked = options.skippedUntracked;
+  if (!isCompleteCandidateVersion(options.stateDir, candidateDir)) {
+    return {
+      ok: false,
+      status: "blocked",
+      localCommit,
+      remoteCommit,
+      candidateDir,
+      skippedUntracked,
+      reason: "候选入口或依赖不完整，未自动切换。",
+    };
+  }
+
+  const activeFile = path.join(options.stateDir, "active-version.json");
+  const previousFile = path.join(options.stateDir, "previous-version.json");
+  const hadActiveFile = fs.existsSync(activeFile);
+  const oldActiveRaw = hadActiveFile ? fs.readFileSync(activeFile, "utf8") : null;
+  const hadPreviousFile = fs.existsSync(previousFile);
+  const oldPreviousRaw = hadPreviousFile ? fs.readFileSync(previousFile, "utf8") : null;
+  let previous: VersionPointer | null = null;
+  if (oldActiveRaw !== null) {
+    try {
+      previous = JSON.parse(oldActiveRaw) as VersionPointer;
+    } catch {
+      return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: "当前活动版本指针无法读取，未自动切换。" };
+    }
+    if (!previous || typeof previous.versionDir !== "string" || typeof previous.commit !== "string" || !isCompleteCandidateVersion(options.stateDir, previous.versionDir)) {
+      return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: "当前活动版本不是可验证候选，未自动切换。" };
+    }
+  } else {
+    previous = materializeSourceVersion(options.repoRoot, options.stateDir, options.sourceCommit, now);
+    if (!previous) {
+      return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: "没有可验证的旧版本候选，未自动切换。" };
+    }
+  }
+  const activeVersionDir = previous.versionDir;
+  const skillPlan = options.installedSkillPath
+    ? planSkillInstall(options.repoRoot, candidateDir, options.installedSkillPath, activeVersionDir ? [activeVersionDir] : [])
+    : ({ action: "none" } as const);
+  if (skillPlan.action === "error") {
+    return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: skillPlan.reason };
+  }
+  let oldSkill: string | null = null;
+  let nextSkill: string | null = null;
+  try {
+    if (options.installedSkillPath) {
+      oldSkill = readSkillContent(options.installedSkillPath);
+      nextSkill = skillPlan.action === "update" ? skillPlan.content : oldSkill;
+      previous = { ...previous, skillBackup: writeSkillBackup(options.stateDir, oldSkill, `previous-${previous.commit?.slice(0, 12) ?? "unknown"}`) };
+    }
+  } catch (error) {
+    return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: `无法建立旧版本或 Skill 回退绑定：${(error as Error).message}` };
+  }
+  let activeSkillBackup: string | null | undefined;
+  try {
+    if (options.installedSkillPath) {
+      activeSkillBackup = writeSkillBackup(options.stateDir, nextSkill, `active-${remoteCommit.slice(0, 12)}`);
+    }
+  } catch (error) {
+    return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: `无法建立新版本 Skill 回退绑定：${(error as Error).message}` };
+  }
+  const activePointer: VersionPointer = {
+    versionDir: candidateDir,
+    commit: remoteCommit,
+    updatedAt: now.toISOString(),
+    ...(options.installedSkillPath ? { skillBackup: activeSkillBackup } : {}),
+  };
+  try {
+    atomicWrite(previousFile, JSON.stringify(previous, null, 2));
+    atomicWrite(activeFile, JSON.stringify(activePointer, null, 2));
+  } catch {
+    try {
+      restoreFile(activeFile, hadActiveFile, oldActiveRaw);
+      restoreFile(previousFile, hadPreviousFile, oldPreviousRaw);
+    } catch {
+      return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: "活动版本指针切换及回退均失败，已停止自动更新。" };
+    }
+    return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: "活动版本指针切换失败，旧版本继续运行。" };
+  }
+  if (skillPlan.action === "update" && options.installedSkillPath) {
+    try {
+      atomicWrite(options.installedSkillPath, skillPlan.content);
+    } catch (error) {
+      try {
+        restoreFile(activeFile, hadActiveFile, oldActiveRaw);
+        restoreFile(previousFile, hadPreviousFile, oldPreviousRaw);
+        if (oldSkill === null) fs.rmSync(options.installedSkillPath, { force: true });
+        else atomicWrite(options.installedSkillPath, oldSkill);
+      } catch {
+        return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: `Skill 更新失败且版本指针回滚失败：${(error as Error).message}` };
+      }
+      return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: `Skill 更新失败，已保留旧版本：${(error as Error).message}` };
+    }
+  }
+  return { ok: true, status: "updated", localCommit, remoteCommit, candidateDir, activeVersion: remoteCommit, skippedUntracked };
 }
 
 export function performSafeUpdate(options: {
@@ -343,6 +631,8 @@ export function performSafeUpdate(options: {
   now?: Date;
   validate?: boolean;
   allowDirtyCandidate?: boolean;
+  candidateSourceDir?: string;
+  candidateCommit?: string;
 }): SafeUpdateResult {
   let release: (() => void) | null = null;
   try {
@@ -366,9 +656,40 @@ function performSafeUpdateUnlocked(options: {
   now?: Date;
   validate?: boolean;
   allowDirtyCandidate?: boolean;
+  candidateSourceDir?: string;
+  candidateCommit?: string;
 }): SafeUpdateResult {
   const repoRoot = path.resolve(options.repoRoot);
   const run = options.run ?? defaultRunner;
+  if (options.candidateSourceDir !== undefined || options.candidateCommit !== undefined) {
+    const sourceHead = git(repoRoot, ["rev-parse", "HEAD"], run);
+    const candidateCommit = options.candidateCommit?.trim() ?? "";
+    if (sourceHead.status !== 0 || !options.candidateSourceDir || !/^[0-9a-f]{40}$/i.test(candidateCommit)) {
+      return { ok: false, status: "blocked", reason: "本地候选必须提供可验证的完整 Git 提交，当前版本未改变。" };
+    }
+    const staged = stageLocalCandidate(options.candidateSourceDir, options.stateDir, candidateCommit, run, options.now ?? new Date());
+    if (!staged) {
+      return { ok: false, status: "blocked", localCommit: sourceHead.stdout.trim(), remoteCommit: candidateCommit, reason: "本地候选未通过路径、Git 身份或干净工作树校验，当前版本未改变。" };
+    }
+    if (options.validate !== false) {
+      for (const [file, args] of validationCommands()) {
+        const result = run(file, args, staged, 600_000);
+        if (result.status !== 0) {
+          return { ok: false, status: "validation_failed", localCommit: sourceHead.stdout.trim(), remoteCommit: candidateCommit, candidateDir: staged, reason: `候选验证失败：${file} ${args.join(" ")}` };
+        }
+      }
+    }
+    return activateCandidateUnlocked({
+      repoRoot,
+      stateDir: options.stateDir,
+      candidateDir: staged,
+      candidateCommit,
+      sourceCommit: sourceHead.stdout.trim(),
+      installedSkillPath: options.installedSkillPath,
+      now: options.now,
+      localCommit: sourceHead.stdout.trim(),
+    });
+  }
   const snapshot = readSnapshot(repoRoot, run);
   if (!snapshot) return { ok: false, status: "blocked", reason: "无法读取本地或远端 Git 状态，已保留当前版本。" };
   const decision = classifyUpdate(snapshot);
@@ -428,60 +749,24 @@ function performSafeUpdateUnlocked(options: {
       }
     }
   }
+  if (!isCompleteCandidateVersion(options.stateDir, candidateDir)) {
+    return { ok: false, status: "blocked", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: "候选入口或依赖不完整，未自动切换。" };
+  }
 
-  const activeFile = path.join(options.stateDir, "active-version.json");
-  const previousFile = path.join(options.stateDir, "previous-version.json");
-  const hadActiveFile = fs.existsSync(activeFile);
-  const oldActiveRaw = hadActiveFile ? fs.readFileSync(activeFile, "utf8") : null;
-  const hadPreviousFile = fs.existsSync(previousFile);
-  const oldPreviousRaw = hadPreviousFile ? fs.readFileSync(previousFile, "utf8") : null;
-  let previous: unknown = null;
-  if (oldActiveRaw !== null) {
-    try {
-      previous = JSON.parse(oldActiveRaw);
-    } catch {
-      return { ok: false, status: "blocked", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: "当前活动版本指针无法读取，未自动切换。" };
-    }
-  }
-  const activeVersionDir =
-    previous && typeof previous === "object" && "versionDir" in previous && typeof previous.versionDir === "string"
-      ? previous.versionDir
-      : undefined;
-  const skillPlan = options.installedSkillPath
-    ? planSkillInstall(repoRoot, candidateDir, options.installedSkillPath, activeVersionDir ? [activeVersionDir] : [])
-    : ({ action: "none" } as const);
-  if (skillPlan.action === "error") {
-    return { ok: false, status: "blocked", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: skillPlan.reason };
-  }
-  try {
-    atomicWrite(previousFile, JSON.stringify(previous, null, 2));
-    atomicWrite(activeFile, JSON.stringify({ versionDir: candidateDir, commit: snapshot.remoteCommit, updatedAt: new Date().toISOString() }, null, 2));
-  } catch {
-    try {
-      restoreFile(activeFile, hadActiveFile, oldActiveRaw);
-      restoreFile(previousFile, hadPreviousFile, oldPreviousRaw);
-    } catch {
-      return { ok: false, status: "blocked", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: "活动版本指针切换及回退均失败，已停止自动更新。" };
-    }
-    return { ok: false, status: "blocked", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: "活动版本指针切换失败，旧版本继续运行。" };
-  }
-  if (skillPlan.action === "update" && options.installedSkillPath) {
-    try {
-      atomicWrite(options.installedSkillPath, skillPlan.content);
-    } catch (error) {
-      try {
-        restoreFile(activeFile, hadActiveFile, oldActiveRaw);
-        restoreFile(previousFile, hadPreviousFile, oldPreviousRaw);
-      } catch {
-        return { ok: false, status: "blocked", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: `Skill 更新失败且版本指针回滚失败：${(error as Error).message}` };
-      }
-      return { ok: false, status: "blocked", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, skippedUntracked, reason: `Skill 更新失败，已保留旧版本：${(error as Error).message}` };
-    }
-  }
-  return { ok: true, status: "updated", localCommit: snapshot.localCommit, remoteCommit: snapshot.remoteCommit, candidateDir, activeVersion: snapshot.remoteCommit, skippedUntracked };
+  return activateCandidateUnlocked({
+    repoRoot,
+    stateDir: options.stateDir,
+    candidateDir,
+    candidateCommit: snapshot.remoteCommit,
+    sourceCommit: head,
+    installedSkillPath: options.installedSkillPath,
+    now: options.now,
+    localCommit: snapshot.localCommit,
+    skippedUntracked,
+  });
 }
 
-export function rollbackActiveVersion(stateDir: string): RollbackResult {
+export function rollbackActiveVersion(stateDir: string, installedSkillPath = defaultInstalledSkillPath()): RollbackResult {
   let release: (() => void) | null = null;
   try {
     release = acquireUpdateLock(stateDir);
@@ -490,13 +775,13 @@ export function rollbackActiveVersion(stateDir: string): RollbackResult {
   }
   if (!release) return { ok: false, status: "blocked", reason: "已有更新正在进行，当前版本保持不变。" };
   try {
-    return rollbackActiveVersionUnlocked(stateDir);
+    return rollbackActiveVersionUnlocked(stateDir, installedSkillPath);
   } finally {
     release();
   }
 }
 
-function rollbackActiveVersionUnlocked(stateDir: string): RollbackResult {
+function rollbackActiveVersionUnlocked(stateDir: string, installedSkillPath: string): RollbackResult {
   const root = path.resolve(stateDir);
   const activeFile = path.join(root, "active-version.json");
   const previousFile = path.join(root, "previous-version.json");
@@ -505,13 +790,13 @@ function rollbackActiveVersionUnlocked(stateDir: string): RollbackResult {
   }
   let activeRaw: string;
   let previousRaw: string;
-  let active: { versionDir?: string; commit?: string } | null;
-  let previous: { versionDir?: string; commit?: string } | null;
+  let active: VersionPointer | null;
+  let previous: VersionPointer | null;
   try {
     activeRaw = fs.readFileSync(activeFile, "utf8");
     previousRaw = fs.readFileSync(previousFile, "utf8");
-    active = JSON.parse(activeRaw) as { versionDir?: string; commit?: string } | null;
-    previous = JSON.parse(previousRaw) as { versionDir?: string; commit?: string } | null;
+    active = JSON.parse(activeRaw) as VersionPointer | null;
+    previous = JSON.parse(previousRaw) as VersionPointer | null;
   } catch {
     return { ok: false, status: "blocked", reason: "版本指针文件无法读取，未执行回滚。" };
   }
@@ -527,13 +812,22 @@ function rollbackActiveVersionUnlocked(stateDir: string): RollbackResult {
   if (!isCompleteCandidateVersion(root, previous.versionDir)) {
     return { ok: false, status: "blocked", reason: "旧版本目录不存在或不完整，未执行回滚。" };
   }
+  let currentSkill: string | null = null;
+  try {
+    currentSkill = readSkillContent(installedSkillPath);
+  } catch (error) {
+    return { ok: false, status: "blocked", reason: `当前已安装 Skill 无法读取，未执行回滚：${(error as Error).message}` };
+  }
   try {
     atomicWrite(previousFile, activeRaw);
     atomicWrite(activeFile, previousRaw);
+    restoreSkillBackup(root, previous, installedSkillPath);
   } catch {
     try {
       atomicWrite(previousFile, previousRaw);
       atomicWrite(activeFile, activeRaw);
+      if (currentSkill === null) fs.rmSync(installedSkillPath, { force: true });
+      else atomicWrite(installedSkillPath, currentSkill);
     } catch {
       return { ok: false, status: "blocked", reason: "回滚指针写入及补偿恢复均失败，已停止回滚。" };
     }

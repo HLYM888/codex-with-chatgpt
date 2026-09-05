@@ -138,6 +138,19 @@ describe("execution output store", () => {
     expect(read.ok).toBe(true);
     if (read.ok) expect(read.text).toContain("安全保存上限");
   });
+
+  it("caps the final post-redaction body and redacts sk-proj tokens", () => {
+    dirs.push(isolateStateDir());
+    const token = `sk-proj-${"A".repeat(40)}`;
+    const raw = `${token}\n${"x".repeat(MAX_STORED_OUTPUT_BYTES)}\napi_key=${token}`;
+    const item = saveExecutionOutput("ws1", { command: "oversized-redaction", raw });
+    expect(item.allowed).toBe(true);
+    expect(item.truncated).toBe(true);
+    expect(item.sizeBytes).toBeLessThanOrEqual(MAX_STORED_OUTPUT_BYTES);
+    const read = readExecutionOutput("ws1", item.id);
+    expect(read.ok).toBe(true);
+    if (read.ok) expect(read.text).not.toContain(token);
+  });
 });
 
 describe("readCappedUtf8", () => {

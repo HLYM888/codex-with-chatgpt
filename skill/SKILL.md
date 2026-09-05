@@ -220,6 +220,13 @@ commands (both are cheap / cached; never mention them unless an update exists):
 负责候选目录、三方合并、测试门槛和原子版本指针。日检仅负责发现版本，不得直接在
 活动目录执行更新；检测到本地改动时只返回 `updateDeferred`，等待明确更新触发。
 
+若老板明确指定一个本地候选版本，必须同时提供该候选的完整 Git 提交；使用
+`c2c update --candidate "<candidate>" --commit "<40-char-sha>" --json`。该路径
+会由同一更新器先核对候选工作树、精确 HEAD 和干净的已跟踪文件，再在 state 目录
+的 `candidates/` 下建立隔离副本，执行与普通更新相同的测试、类型检查和构建，最后
+走同一把更新锁、Skill 备份和原子版本指针流程。不要把工作树路径直接写入活动指针，
+也不要用普通 `c2c update` 把非上游候选重新生成成另一版本。
+
 Inside the checkout directory (see Locations):
 
 1. **保护现场（强制）**：先执行 `git status --porcelain=v1 --untracked-files=all`。
@@ -237,19 +244,23 @@ Inside the checkout directory (see Locations):
 3. **候选验证**：只在候选目录运行 `corepack pnpm install`、测试、类型检查
    和 `corepack pnpm build`。任何失败、超时、依赖锁文件变化异常或候选无法
    证明包含本地改动时，放弃切换并保留原版本；不得用覆盖或强制合并“修复”。
-4. **原子切换**：候选全部通过后，先备份当前生效的 Skill 和版本路径；若已安装
-   Skill 与仓库模板存在本地定制差异，也必须在候选中做三方合并，冲突时保留当前
-   Skill，不得静默覆盖。只有合并无冲突且校验通过，才把 Codex with ChatGPT 的
-   checkout 路径切换到候选目录并重新安装候选 Skill。`c2c update --json`
-   会明确返回需要激活；只有确认 Bridge 的 workspace 身份和当前工作区完全
-   匹配时，才对该工作区执行一次 `c2c restart -w <workspace>`。状态未知、
-   workspace 不匹配或无法确认活动版本时，不自动重启。原 checkout、旧 Skill
-   和旧候选目录都保留，作为回滚版本。
+4. **原子切换**：候选全部通过后，先在 state 目录的 `candidates/` 下保留当前
+   可运行版本，并备份当前生效的 Skill；若已安装 Skill 与仓库模板存在本地定制
+   差异，也必须在候选中做三方合并，冲突时保留当前 Skill，不得静默覆盖。只有
+   合并无冲突且校验通过，才原子写入 `active-version.json` 和
+   `previous-version.json`。两个版本指针都绑定对应的 Skill 备份；首次更新无法
+   物化完整旧版本时必须阻断。稳定启动器只从 state 目录 `candidates/` 下的正规
+   候选入口加载，并把指针中的精确提交传入运行时。`c2c update --json` 会明确
+   返回需要激活；只有确认 Bridge 的 workspace 身份和当前工作区完全匹配时，
+   才对该工作区执行一次 `c2c restart -w <workspace>`。状态未知、workspace
+   不匹配或无法确认活动版本时，不自动重启。原 checkout、旧 Skill 和旧候选
+   目录都保留，作为回滚版本。
 5. **回滚门槛**：切换后运行 `c2c doctor -w <workspace> --json` 及一次
    工作区读取/搜索/Git 检查。任一失败立即执行 `c2c rollback --json`，再只重启
-   一次已确认工作区的现有连接并复核；`rollback` 只交换已验证的 `active-version.json` 与
-   `previous-version.json`，不会删除候选或触碰用户项目目录。没有完整旧版本时
-   必须保持当前版本并报告阻断；禁止循环重启。
+   一次已确认工作区的现有连接并复核；`rollback` 在同一更新锁下只交换已验证的
+   `active-version.json` 与 `previous-version.json`，并恢复目标版本绑定的 Skill
+   备份；指针、候选目录或 Skill 备份不完整时保持当前状态并报告阻断。不会删除
+   候选或触碰用户项目目录，禁止循环重启。
 6. 通过上述验证后执行 `c2c sandbox-allow --json`，再运行
    `c2c update-check --force --json` 刷新缓存。只在真实切换成功后告诉用户
    `✓ 已更新到最新版本`，然后继续触发更新的原任务。

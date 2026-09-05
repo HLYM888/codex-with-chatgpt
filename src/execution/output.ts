@@ -74,10 +74,10 @@ export interface ExecutionOutputPage {
   hasMore: boolean;
 }
 
-function capUtf8Text(value: string): { text: string; truncated: boolean } {
+function capUtf8Text(value: string, maxBytes = MAX_STORED_OUTPUT_BYTES): { text: string; truncated: boolean } {
   const bytes = Buffer.from(value, "utf8");
-  if (bytes.length <= MAX_STORED_OUTPUT_BYTES) return { text: value, truncated: false };
-  let end = MAX_STORED_OUTPUT_BYTES;
+  if (bytes.length <= maxBytes) return { text: value, truncated: false };
+  let end = maxBytes;
   while (end > 0) {
     try {
       return {
@@ -89,6 +89,13 @@ function capUtf8Text(value: string): { text: string; truncated: boolean } {
     }
   }
   return { text: "", truncated: true };
+}
+
+function capSanitizedText(value: string): { text: string; truncated: boolean } {
+  const marker = "\n…[脱敏正文已达到 4 MiB 安全保存上限，后续内容未保存]";
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  const prefix = capUtf8Text(value, Math.max(0, MAX_STORED_OUTPUT_BYTES - markerBytes));
+  return { text: `${prefix.text}${marker}`, truncated: true };
 }
 
 function pageUtf8(
@@ -126,8 +133,9 @@ export function saveExecutionOutput(workspaceId: string, input: SaveOutputInput)
   const id = index.nextId;
   const timestamp = new Date().toISOString();
   const allowed = sanitized.allowed;
-  const text = allowed ? sanitized.text : "";
-  const truncated = allowed ? sanitized.truncated || sourceTruncated : false;
+  const stored = allowed ? capUtf8Text(sanitized.text) : { text: "", truncated: false };
+  const text = allowed ? (stored.truncated ? capSanitizedText(sanitized.text).text : sanitized.text) : "";
+  const truncated = allowed ? sanitized.truncated || sourceTruncated || stored.truncated : false;
   const meta: ExecutionOutputMeta = {
     id,
     command: redact(input.command).slice(0, 200),

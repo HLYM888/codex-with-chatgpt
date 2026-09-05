@@ -884,13 +884,17 @@ program
   .command("update")
   .description("Safely update in an isolated candidate and switch only after validation")
   .option("--json", "machine-readable output", false)
-  .action((opts: { json: boolean }) => {
+  .option("--candidate <path>", "stage and activate an already built local candidate")
+  .option("--commit <sha>", "the exact 40-character Git commit of the local candidate")
+  .action((opts: { json: boolean; candidate?: string; commit?: string }) => {
     const result = performSafeUpdate({
       repoRoot,
       stateDir: getStateDir(),
       installedSkillPath: defaultInstalledSkillPath(),
       validate: true,
       allowDirtyCandidate: true,
+      candidateSourceDir: opts.candidate,
+      candidateCommit: opts.commit,
     });
     const activation =
       result.status === "updated"
