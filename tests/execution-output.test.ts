@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { sanitizeExecutionOutput, MAX_OUTPUT_LINES } from "../src/execution/sanitize.js";
-import { listExecutionOutputs, readExecutionOutput, saveExecutionOutput } from "../src/execution/output.js";
+import { listExecutionOutputs, readExecutionOutput, saveExecutionOutput, MAX_STORED_OUTPUT_BYTES } from "../src/execution/output.js";
 import { readCappedUtf8 } from "../src/execution/input.js";
 import { cleanup, isolateStateDir, makeTmpDir } from "./helpers.js";
 
@@ -108,7 +108,35 @@ describe("execution output store", () => {
     expect(item.sourceTruncated).toBe(true);
     const read = readExecutionOutput("ws1", item.id);
     expect(read.ok).toBe(true);
-    if (read.ok) expect(read.text).toContain("源文件已达到读取上限");
+    if (read.ok) expect(read.text).toContain("源文件已达到安全保存上限");
+  });
+
+  it("keeps a long redacted body available through bounded pages", () => {
+    dirs.push(isolateStateDir());
+    const raw = Array.from({ length: 30000 }, (_, i) => `line ${i} 中文`).join("\n");
+    const item = saveExecutionOutput("ws1", { command: "long", raw, exitCode: 0 });
+    expect(item.allowed).toBe(true);
+    expect(item.truncated).toBe(false);
+    const first = readExecutionOutput("ws1", item.id, { maxBytes: 1024 });
+    expect(first.ok).toBe(true);
+    if (first.ok) {
+      expect(first.text.length).toBeGreaterThan(0);
+      expect(first.hasMore).toBe(true);
+      const second = readExecutionOutput("ws1", item.id, { offset: first.nextOffset!, maxBytes: 1024 });
+      expect(second.ok).toBe(true);
+      if (second.ok) expect(second.offset).toBe(first.nextOffset);
+    }
+  });
+
+  it("marks output beyond the 4 MiB storage safety cap", () => {
+    dirs.push(isolateStateDir());
+    const item = saveExecutionOutput("ws1", { command: "oversized", raw: "x".repeat(MAX_STORED_OUTPUT_BYTES + 1) });
+    expect(item.allowed).toBe(true);
+    expect(item.sourceTruncated).toBe(true);
+    expect(item.truncated).toBe(true);
+    const read = readExecutionOutput("ws1", item.id, { offset: MAX_STORED_OUTPUT_BYTES - 1024 });
+    expect(read.ok).toBe(true);
+    if (read.ok) expect(read.text).toContain("安全保存上限");
   });
 });
 
@@ -146,5 +174,29 @@ describe("readCappedUtf8", () => {
       exitCode: 0,
     });
     expect(item.sourceEncoding).toBe("gb18030");
+  });
+
+  it("decodes a complete four-byte GB18030 character without trimming it", () => {
+    const dir = makeTmpDir("output-gb18030-four-byte");
+    dirs.push(dir);
+    const file = path.join(dir, "out.log");
+    fs.writeFileSync(file, Buffer.from([0x95, 0x32, 0x82, 0x36]));
+    expect(readCappedUtf8(file, 1024)).toEqual({ text: "𠀀", sourceTruncated: false, encoding: "gb18030" });
+  });
+
+  it("trims only an incomplete multibyte character at a capped boundary", () => {
+    const dir = makeTmpDir("output-gb18030-boundary");
+    dirs.push(dir);
+    const file = path.join(dir, "out.log");
+    fs.writeFileSync(file, Buffer.from([0x41, 0x95, 0x32, 0x82, 0x36, 0x0a]));
+    expect(readCappedUtf8(file, 4)).toEqual({ text: "A", sourceTruncated: true, encoding: "utf8" });
+  });
+
+  it("does not silently discard an invalid byte in an uncapped file", () => {
+    const dir = makeTmpDir("output-invalid-full");
+    dirs.push(dir);
+    const file = path.join(dir, "out.log");
+    fs.writeFileSync(file, Buffer.from([0xff]));
+    expect(readCappedUtf8(file, 1024)).toEqual({ text: "�", sourceTruncated: false, encoding: "utf8" });
   });
 });

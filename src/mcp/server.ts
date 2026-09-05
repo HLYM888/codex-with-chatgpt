@@ -281,6 +281,8 @@ export function createMcpServer(ctx: McpContext): McpServer {
         action: z.enum(["list", "read"]).default("list"),
         id: z.number().int().positive().optional(),
         limit: z.number().int().min(1).max(50).default(20),
+        offset: z.number().int().min(0).default(0),
+        maxBytes: z.number().int().min(1024).max(64 * 1024).default(64 * 1024),
       },
       annotations: { readOnlyHint: true },
     },
@@ -306,7 +308,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
         return ok({ items });
       }
       if (args.id === undefined) return fail("INVALID_ARGUMENTS", "read 操作需要 id");
-      const result = readExecutionOutput(workspace.id, args.id);
+      const result = readExecutionOutput(workspace.id, args.id, { offset: args.offset, maxBytes: args.maxBytes });
       if (!result.ok) {
         if (result.error === "OUTPUT_RESTRICTED") {
           return fail("OUTPUT_RESTRICTED", "此输出未获准供 ChatGPT 读取。");
@@ -321,6 +323,9 @@ export function createMcpServer(ctx: McpContext): McpServer {
         truncated: result.meta.truncated,
         sourceTruncated: result.meta.sourceTruncated,
         sourceEncoding: result.meta.sourceEncoding,
+        offset: result.offset,
+        nextOffset: result.nextOffset,
+        hasMore: result.hasMore,
         text: result.text,
       });
     }

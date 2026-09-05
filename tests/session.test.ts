@@ -34,6 +34,7 @@ describe("resolveConversation", () => {
     expect(view.mode).toBe("project");
     expect(view.reason).toBe("new-workspace");
     expect(view.reuseSavedChat).toBe(false);
+    expect(view.sameThreadEvidence).toBe("not_provided");
     expect(view.projectReady).toBe(false);
   });
 
@@ -71,6 +72,7 @@ describe("resolveConversation", () => {
     expect(view.projectReady).toBe(true);
     expect(view.reuseSavedChat).toBe(false);
     expect(view.chatUrl).toBeNull();
+    expect(view.sameThreadEvidence).toBe("not_provided");
     expect(view.connectorName).toBe("Codex with ChatGPT · Demo");
   });
 
@@ -86,6 +88,7 @@ describe("resolveConversation", () => {
     );
     expect(view.reuseSavedChat).toBe(true);
     expect(view.chatUrl).toBe("https://chatgpt.com/c/thread-1");
+    expect(view.sameThreadEvidence).toBe("caller_asserted");
   });
 });
 

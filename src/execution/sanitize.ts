@@ -23,6 +23,11 @@ export type SanitizeResult =
   | { allowed: true; text: string; truncated: boolean }
   | { allowed: false; reason: string };
 
+export interface SanitizeOptions {
+  /** Keep the complete redacted body for the paged execution-output store. */
+  truncate?: boolean;
+}
+
 function redactHomePaths(text: string): string {
   return text
     .replace(/\/Users\/[^/\s"'`]+/g, "/Users/[user]")
@@ -60,13 +65,13 @@ function truncate(text: string): { text: string; truncated: boolean } {
 }
 
 /** Deterministic gate. Codex may nominate output; this decides if ChatGPT may read it. */
-export function sanitizeExecutionOutput(raw: string): SanitizeResult {
+export function sanitizeExecutionOutput(raw: string, options: SanitizeOptions = {}): SanitizeResult {
   if (HARD_REJECT.some((pattern) => pattern.test(raw))) {
     return { allowed: false, reason: "private_key" };
   }
   let text = redact(raw);
   text = applyExtraRedact(text);
   text = redactHomePaths(text);
-  const { text: limited, truncated } = truncate(text);
+  const { text: limited, truncated } = options.truncate === false ? { text, truncated: false } : truncate(text);
   return { allowed: true, text: limited, truncated };
 }

@@ -72,6 +72,10 @@ whatever data it needs by itself.
      conversation opens a new chat from the Project collection page — never
      `goto` `https://chatgpt.com/` to create it, and never reuse another
      Codex conversation's chat URL just because `session.url` exists.
+   `--same-thread` is a caller-provided assertion only: this CLI has no
+   verifiable Codex thread ID and does not machine-bind or prove cross-thread
+   identity. Use it only when the current Codex conversation itself provides
+   the binding evidence; otherwise leave it off.
    Each workspace also has exactly ONE ChatGPT connector. Do not create a
    second connector for the same workspace. Other workspaces may have their
    own connectors — never edit those.
@@ -470,6 +474,10 @@ One ChatGPT Project per workspace. Mapping:
    you already saved it earlier in THIS Codex thread.
 3. Different workspace → different Project and different connector.
 
+The `--same-thread` switch does not carry a Codex thread identifier; it only
+records the Skill's current-thread evidence. Never treat it as a machine
+verified cross-thread binding.
+
 **Open a chat in this Codex thread**
 
 - If you already saved a ChatGPT chat URL earlier in THIS Codex conversation:
@@ -668,7 +676,10 @@ TESTS:
 27 项通过
 
 请通过连接独立检查工作区和当前 Git 差异。
-如果 execution_output 列出了本轮可读项目，先 list 再 read。
+如果 execution_output 列出了本轮可读项目，先 list 再 read。read 默认返回
+64 KiB 的 UTF-8 分页；如果 `hasMore` 为 true，使用 `offset=nextOffset`
+继续读取，直到 `hasMore=false`。正文在安全上限 4 MiB 内完整保存并分页；
+超过上限会明确标记 source-truncated。restricted 项目始终不提供正文。
 如果状态为 restricted，忽略正文并通过 git_diff 复核。
 回复时除 `[C2C]`、`STATE`、`TASK_ID`、`ITERATION` 及协议状态值外，所有标题、标签和说明文字都使用简体中文；不得使用 `REVIEW_BASIS`、`ACCEPTED_SCOPE`、`RESIDUAL_RISK`、`ROLLBACK`、`NEXT_EXPECTED_STEP`、`VERDICT` 等英文内容标题。
 ```

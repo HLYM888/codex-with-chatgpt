@@ -5,6 +5,8 @@ import { redact } from "../logger/index.js";
 import { sanitizeExecutionOutput } from "./sanitize.js";
 
 export const MAX_OUTPUT_RECORDS = 40;
+export const MAX_OUTPUT_PAGE_BYTES = 64 * 1024;
+export const MAX_STORED_OUTPUT_BYTES = 4 * 1024 * 1024;
 
 export interface ExecutionOutputMeta {
   id: number;
@@ -66,17 +68,65 @@ export interface SaveOutputInput {
   sourceEncoding?: "utf8" | "gb18030";
 }
 
+export interface ExecutionOutputPage {
+  offset: number;
+  nextOffset: number | null;
+  hasMore: boolean;
+}
+
+function capUtf8Text(value: string): { text: string; truncated: boolean } {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= MAX_STORED_OUTPUT_BYTES) return { text: value, truncated: false };
+  let end = MAX_STORED_OUTPUT_BYTES;
+  while (end > 0) {
+    try {
+      return {
+        text: new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end)),
+        truncated: true,
+      };
+    } catch {
+      end -= 1;
+    }
+  }
+  return { text: "", truncated: true };
+}
+
+function pageUtf8(
+  text: string,
+  requestedOffset = 0,
+  requestedMaxBytes = MAX_OUTPUT_PAGE_BYTES
+): ExecutionOutputPage & { text: string } {
+  const bytes = Buffer.from(text, "utf8");
+  const maxBytes = Math.min(MAX_OUTPUT_PAGE_BYTES, Math.max(1024, Math.floor(requestedMaxBytes)));
+  let offset = Math.max(0, Math.min(bytes.length, Math.floor(requestedOffset)));
+  // Never start inside a UTF-8 continuation byte, even if a caller supplies a
+  // stale or hand-written offset.
+  while (offset < bytes.length && (bytes[offset] & 0xc0) === 0x80) offset += 1;
+  let end = Math.min(bytes.length, offset + maxBytes);
+  while (end > offset) {
+    try {
+      const page = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(offset, end));
+      const hasMore = end < bytes.length;
+      return { text: page, offset, nextOffset: hasMore ? end : null, hasMore };
+    } catch {
+      end -= 1;
+    }
+  }
+  return { text: "", offset, nextOffset: offset < bytes.length ? offset + 1 : null, hasMore: offset < bytes.length };
+}
+
 export function saveExecutionOutput(workspaceId: string, input: SaveOutputInput): ExecutionOutputMeta {
-  const raw = input.sourceTruncated
-    ? `${input.raw}\n…[源文件已达到读取上限，正文仅含安全前缀]`
-    : input.raw;
-  const sanitized = sanitizeExecutionOutput(raw);
+  const capped = capUtf8Text(input.raw);
+  const sourceTruncated = Boolean(input.sourceTruncated || capped.truncated);
+  const raw = sourceTruncated
+    ? `${capped.text}\n…[源文件已达到安全保存上限，正文仅含安全前缀]`
+    : capped.text;
+  const sanitized = sanitizeExecutionOutput(raw, { truncate: false });
   const index = readIndex(workspaceId);
   const id = index.nextId;
   const timestamp = new Date().toISOString();
   const allowed = sanitized.allowed;
   const text = allowed ? sanitized.text : "";
-  const sourceTruncated = Boolean(input.sourceTruncated);
   const truncated = allowed ? sanitized.truncated || sourceTruncated : false;
   const meta: ExecutionOutputMeta = {
     id,
@@ -121,14 +171,15 @@ export function listExecutionOutputs(workspaceId: string, limit = 20): Execution
 
 export function readExecutionOutput(
   workspaceId: string,
-  id: number
+  id: number,
+  options: { offset?: number; maxBytes?: number } = {}
 ):
-  | { ok: true; meta: ExecutionOutputMeta; text: string }
+  | ({ ok: true; meta: ExecutionOutputMeta; text: string } & ExecutionOutputPage)
   | { ok: false; error: "NOT_FOUND" | "OUTPUT_RESTRICTED" } {
   const meta = readIndex(workspaceId).items.find((item) => item.id === id);
   if (!meta) return { ok: false, error: "NOT_FOUND" };
   if (!meta.allowed) return { ok: false, error: "OUTPUT_RESTRICTED" };
   const file = bodyFile(workspaceId, id);
-  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-  return { ok: true, meta, text };
+  const fullText = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  return { ok: true, meta, ...pageUtf8(fullText, options.offset, options.maxBytes) };
 }

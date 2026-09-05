@@ -83,7 +83,16 @@ function readActiveVersionCommit(): string | null {
 }
 
 /** Local harness output only. Never pasted into ChatGPT. */
-const MAX_RECORD_OUTPUT_READ = 256 * 1024;
+// Keep a complete redacted body for bounded MCP pagination. A file above this
+// cap is explicitly marked as source-truncated before it enters the store.
+const MAX_RECORD_OUTPUT_READ = 4 * 1024 * 1024;
+const MAX_RECORD_NOTES_CHARS = 8 * 1024;
+
+function capRecordNotes(value: string | undefined): string | undefined {
+  if (value === undefined || value.length <= MAX_RECORD_NOTES_CHARS) return value;
+  const marker = "\n…[备注已达到 8192 字符安全上限]";
+  return `${value.slice(0, MAX_RECORD_NOTES_CHARS - marker.length)}${marker}`;
+}
 
 function persistWorkspaceEndpoint(opts: {
   workspaceId: string;
@@ -1164,7 +1173,7 @@ program
         tests: opts.tests ?? null,
         exitStatus: opts.exitStatus,
         timestamp: new Date().toISOString(),
-        notes: opts.notes?.slice(0, 400),
+        notes: capRecordNotes(opts.notes),
         outputId,
         outputAvailable,
       });

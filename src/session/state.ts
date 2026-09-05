@@ -76,12 +76,14 @@ export interface ConversationView {
   projectReady: boolean;
   chatUrl: string | null;
   connectorName: string | null;
-  /** long-chat: Skill may goto chatUrl. project: only if THIS Codex thread already bound it. */
+  /** long-chat: Skill may goto chatUrl; project: only with caller evidence. */
   reuseSavedChat: boolean;
+  /** This is evidence supplied by the caller, not a verified Codex thread ID. */
+  sameThreadEvidence: "not_provided" | "caller_asserted" | "workspace_scoped";
 }
 
 export interface ConversationResolveOptions {
-  /** The caller has already established that this is the same Codex thread. */
+  /** The caller asserts same-thread context; no Codex thread ID is available here. */
   sameThread?: boolean;
 }
 
@@ -129,6 +131,7 @@ export function resolveConversation(
       chatUrl: null,
       connectorName: null,
       reuseSavedChat: false,
+      sameThreadEvidence: "not_provided",
     };
   }
 
@@ -144,6 +147,7 @@ export function resolveConversation(
       chatUrl: session.url ?? null,
       connectorName: session.connectorName ?? null,
       reuseSavedChat: Boolean(session.url),
+      sameThreadEvidence: "workspace_scoped",
     };
   }
 
@@ -159,6 +163,7 @@ export function resolveConversation(
       chatUrl: options.sameThread ? session.url ?? null : null,
       connectorName: session.connectorName ?? null,
       reuseSavedChat: Boolean(options.sameThread && session.url),
+      sameThreadEvidence: options.sameThread ? "caller_asserted" : "not_provided",
     };
   }
 
@@ -170,6 +175,7 @@ export function resolveConversation(
     chatUrl: session.url ?? null,
     connectorName: session.connectorName ?? null,
     reuseSavedChat: Boolean(session.url),
+    sameThreadEvidence: "workspace_scoped",
   };
 }
 

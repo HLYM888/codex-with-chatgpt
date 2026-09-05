@@ -6,7 +6,23 @@ export interface CappedCommandOutput {
   encoding: "utf8" | "gb18030";
 }
 
-function decodeCommandBytes(bytes: Buffer): Pick<CappedCommandOutput, "text" | "encoding"> {
+function decodeCommandBytes(bytes: Buffer, sourceTruncated: boolean): Pick<CappedCommandOutput, "text" | "encoding"> {
+  // A complete file must be decoded as a complete file. Trimming a short
+  // CP936 stream while probing encodings can turn it into an empty UTF-8
+  // result and can hide an invalid final byte. Only a bounded prefix may trim
+  // an incomplete code point at its cap boundary.
+  if (!sourceTruncated) {
+    try {
+      return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), encoding: "utf8" };
+    } catch {
+      try {
+        return { text: new TextDecoder("gb18030", { fatal: true }).decode(bytes), encoding: "gb18030" };
+      } catch {
+        return { text: new TextDecoder("utf-8").decode(bytes), encoding: "utf8" };
+      }
+    }
+  }
+
   const maxBoundaryTrim = Math.min(4, bytes.length);
   for (let cut = bytes.length; cut >= bytes.length - maxBoundaryTrim; cut -= 1) {
     const candidate = bytes.subarray(0, cut);
@@ -33,12 +49,10 @@ export function readCappedUtf8(filePath: string, maxBytes: number): CappedComman
   try {
     const size = fs.fstatSync(fd).size;
     const sourceTruncated = size > maxBytes;
-    // Read look-ahead bytes so a capped UTF-8/GB18030 character can be
-    // removed at the boundary without emitting replacement characters.
-    const buf = Buffer.alloc(Math.min(size, maxBytes + 4));
+    const buf = Buffer.alloc(Math.min(size, maxBytes));
     const n = fs.readSync(fd, buf, 0, buf.length, 0);
     const bounded = buf.subarray(0, Math.min(n, maxBytes));
-    return { ...decodeCommandBytes(bounded), sourceTruncated };
+    return { ...decodeCommandBytes(bounded, sourceTruncated), sourceTruncated };
   } finally {
     fs.closeSync(fd);
   }
