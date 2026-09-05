@@ -44,7 +44,8 @@ Detailed docs below are in English · 详细中文文档见 **[README.zh-CN.md](
 1. 环境自检：需要 git 和 Node.js ≥ 20，缺什么就自动安装
   （macOS 用 Homebrew，Windows 用 winget），同时安装 cloudflared。
 2. 下载：把 https://github.com/XiaoDuoYa/codex-with-chatgpt 克隆到
-   ~/codex-with-chatgpt（已存在就 git pull 更新）。
+   ~/codex-with-chatgpt。若目录已存在，更新会使用隔离候选目录和经过测试的三方
+   合并；不会 stash、reset、clean 或覆盖本地改动。
 3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
 4. 安装 Skill：把仓库里的 skill/SKILL.md 复制到
    ~/.codex/skills/codex-with-chatgpt/SKILL.md，并把文件中
@@ -70,7 +71,9 @@ I am a non-technical user — do everything yourself:
    anything missing yourself (macOS: Homebrew, Windows: winget). Also install
    cloudflared.
 2. Download: clone https://github.com/XiaoDuoYa/codex-with-chatgpt into
-   ~/codex-with-chatgpt (if it already exists, git pull to update).
+   ~/codex-with-chatgpt. If it already exists, updates use an isolated candidate
+   directory and a tested three-way merge; local changes are never stashed,
+   reset, cleaned, or overwritten.
 3. Build: inside that folder run `corepack pnpm install` then `corepack pnpm build`.
 4. Install the Skill: copy skill/SKILL.md to
    ~/.codex/skills/codex-with-chatgpt/SKILL.md, and update the line
@@ -86,10 +89,20 @@ I am a non-technical user — do everything yourself:
 ```
 
 
-**Updates · 更新** — The Skill checks GitHub once a day and updates itself when a
-new version is released; no action needed. You can also say "更新 Codex with ChatGPT"
-anytime. / Skill 每天自动检查一次 GitHub，有新版本会自动更新，无需任何操作；
-也可以随时对 Codex 说"更新 Codex with ChatGPT"。
+**Updates · 更新** — The Skill checks GitHub once a day. When a new version is
+released, it prepares an isolated candidate, merges local changes, tests it, and
+switches only after validation; conflicts or failures leave the current version
+untouched. You can also say "更新 Codex with ChatGPT" anytime. / Skill 每天自动
+检查一次 GitHub；有新版本时会在隔离目录合并本地改动、完成测试后再切换，冲突
+或失败则保留当前版本，不会覆盖原内容。也可以随时对 Codex 说"更新 Codex with
+ChatGPT"。
+
+The update entry point is `c2c update --json`. The stable launcher reads a local
+active-version pointer; only a candidate that passes install, tests, typecheck, and
+build is activated, while the previous version remains available for rollback. If a
+switched version misbehaves, run `c2c rollback --json` and restart the existing
+connection; this only swaps the verified active/previous pointers and does not delete
+the checkout or project files.
 
 ---
 

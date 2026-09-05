@@ -28,7 +28,8 @@ Agent（Codex），然后去倒杯咖啡：
 1. 环境自检：需要 git 和 Node.js ≥ 20，缺什么就自动安装
   （macOS 用 Homebrew，Windows 用 winget），同时安装 cloudflared。
 2. 下载：把 https://github.com/XiaoDuoYa/codex-with-chatgpt 克隆到
-   ~/codex-with-chatgpt（已存在就 git pull 更新）。
+   ~/codex-with-chatgpt。若目录已存在，更新会使用隔离候选目录和经过测试的三方
+   合并；不会 stash、reset、clean 或覆盖本地改动。
 3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
 4. 安装 Skill：把仓库里的 skill/SKILL.md 复制到
    ~/.codex/skills/codex-with-chatgpt/SKILL.md，并把文件中
@@ -42,8 +43,14 @@ Agent（Codex），然后去倒杯咖啡：
    Tunnel、端口这些词，不要向我解释；出了问题先自己修。
 ```
 
-**更新**：Skill 每天自动检查一次 GitHub，有新版本会自动更新并继续任务，
-无需任何操作；也可以随时对 Codex 说"更新 Codex with ChatGPT"。
+**更新**：Skill 每天自动检查一次 GitHub。有新版本时，会在隔离候选目录中合并
+本地改动，完成测试后才切换；如果冲突或失败，会保留当前版本，不覆盖原内容。
+也可以随时对 Codex 说"更新 Codex with ChatGPT"。
+
+实际更新由 `c2c update --json` 执行：稳定启动入口读取本机的活动版本指针，候选
+通过安装、测试、类型检查和构建后才切换；旧版本和候选目录都会保留，便于回退。
+如果切换后的版本出现异常，可执行 `c2c rollback --json`，再重启现有连接；它只
+交换已验证的活动/上一版本指针，不删除原目录或项目文件。
 
 ## 安装 → 配置 → 使用（手动版）
 

@@ -53,10 +53,14 @@ export function parseQuickTunnelUrl(line: string): string | null {
 
 export interface CloudflaredQuickTunnelOptions {
   startTimeoutMs?: number;
+  maxStartAttempts?: number;
+  maxConsecutiveHealthErrors?: number;
+  startRetryDelayMs?: number;
+  protocol?: "auto" | "quic" | "http2";
   spawnImpl?: (
     command: string,
     args: string[],
-    options: { stdio: ["ignore", "pipe", "pipe"]; windowsHide: true }
+    options: { stdio: ["ignore", "pipe", "pipe"]; windowsHide: boolean }
   ) => ChildProcess;
   fetchImpl?: (input: string | URL, init?: RequestInit) => Promise<Response>;
 }
@@ -72,6 +76,10 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
   private url: string | null = null;
   private lastError: string | null = null;
   private readonly startTimeoutMs: number;
+  private readonly maxStartAttempts: number;
+  private readonly maxConsecutiveHealthErrors: number;
+  private readonly startRetryDelayMs: number;
+  private readonly protocol: "auto" | "quic" | "http2" | undefined;
   private readonly spawnImpl: NonNullable<CloudflaredQuickTunnelOptions["spawnImpl"]>;
   private readonly fetchImpl: NonNullable<CloudflaredQuickTunnelOptions["fetchImpl"]>;
   private starting: Promise<string> | null = null;
@@ -83,6 +91,13 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
     options: CloudflaredQuickTunnelOptions = {}
   ) {
     this.startTimeoutMs = options.startTimeoutMs ?? 45_000;
+    this.maxStartAttempts = Math.max(1, options.maxStartAttempts ?? 1);
+    this.maxConsecutiveHealthErrors = Math.max(
+      1,
+      options.maxConsecutiveHealthErrors ?? Number.POSITIVE_INFINITY
+    );
+    this.startRetryDelayMs = Math.max(0, options.startRetryDelayMs ?? 250);
+    this.protocol = options.protocol;
     this.spawnImpl = options.spawnImpl ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
   }
@@ -94,13 +109,30 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
   async start(localPort: number): Promise<string> {
     if (this.child && this.url) return this.url;
     if (this.starting) return this.starting;
-    const starting = this.startProcess(localPort);
+    const starting = this.startWithRetries(localPort);
     this.starting = starting;
     try {
       return await starting;
     } finally {
       if (this.starting === starting) this.starting = null;
     }
+  }
+
+  private async startWithRetries(localPort: number): Promise<string> {
+    for (let attempt = 1; attempt <= this.maxStartAttempts; attempt += 1) {
+      try {
+        return await this.startProcess(localPort);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const retryable = /public health endpoint unreachable/i.test(message);
+        if (!retryable || attempt >= this.maxStartAttempts) throw error;
+        this.logger.warn(
+          `Quick tunnel address unreachable; retrying (${attempt}/${this.maxStartAttempts})`
+        );
+        await new Promise((resolve) => setTimeout(resolve, this.startRetryDelayMs));
+      }
+    }
+    throw new Error("Quick tunnel start failed");
   }
 
   private startProcess(localPort: number): Promise<string> {
@@ -118,7 +150,13 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
       try {
         child = this.spawnImpl(
           bin,
-          ["tunnel", "--url", `http://127.0.0.1:${localPort}`, "--no-autoupdate"],
+          [
+            "tunnel",
+            ...(this.protocol ? ["--protocol", this.protocol] : []),
+            "--url",
+            `http://127.0.0.1:${localPort}`,
+            "--no-autoupdate",
+          ],
           { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
         );
       } catch (error) {
@@ -130,6 +168,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
       this.lastError = null;
       let settled = false;
       let candidateUrl: string | null = null;
+      let consecutiveHealthErrors = 0;
       let cancel: (() => void) | null = null;
       let timeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -199,6 +238,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
           try {
             const result = await bridgeHealth(this.fetchImpl, publicUrl);
             if (settled) return;
+            consecutiveHealthErrors = 0;
             if (result.ready) {
               ready(publicUrl);
               return;
@@ -207,6 +247,11 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
           } catch (error) {
             if (settled) return;
             this.lastError = error instanceof Error ? error.message : String(error);
+            consecutiveHealthErrors += 1;
+            if (consecutiveHealthErrors >= this.maxConsecutiveHealthErrors) {
+              fail(new Error("Quick tunnel public health endpoint unreachable"));
+              return;
+            }
           }
           if (settled) return;
           await new Promise((resolveWait) => setTimeout(resolveWait, HEALTH_CHECK_INTERVAL_MS));

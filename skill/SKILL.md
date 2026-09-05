@@ -86,13 +86,27 @@ whatever data it needs by itself.
    - sandbox / state-dir write failed (EPERM)
    - this workspace used to have a public URL and the tunnel is down
    - `chatgptRepair.needed` is true (fix the connector first, then doctor again)
-   - `namedRepair.needed` is true (user must log in to Cloudflare, then doctor again.
+   - `namedRepair.needed` is true (user must login to Cloudflare, then doctor again.
      Do not Delete the ChatGPT connector — the address did not change)
    - `report.bridge` says 状态无法确认: the local bridge may still be running.
      Do not `c2c start`, do not Delete the connector, do not treat it as
      `chatgptRepair`. Wait and run doctor again.
    A ChatGPT-side 401 after a sent message is different: repair then, do not
    treat it as permission to skip this gate next time.
+10. **User-visible language (global preference).** Everything the user can see
+    in ChatGPT web, ChatGPT Work, Codex status/reporting, setup guidance,
+    Project instructions, C2C message prose, and conversation titles must use
+    Simplified Chinese. Only the fixed C2C envelope keys `[C2C]`, `STATE`,
+    `TASK_ID`, `ITERATION`, their protocol state values, tool names, code,
+    commands, paths, and exact product/workspace/connector identifiers may stay
+    in their original language. Every user-visible content heading or label
+    must be natural Simplified Chinese; never emit uppercase English snake-case
+    headings such as `REVIEW_BASIS`, `ACCEPTED_SCOPE`, `RESIDUAL_RISK`,
+    `ROLLBACK`, `NEXT_EXPECTED_STEP`, or `VERDICT`. Use `复核依据`, `验收范围`,
+    `剩余风险`, `回滚方法`, `下一步`, and `结论` instead; translate verdict values
+    as `通过`, `需修正`, or `阻断`. Keep true identifiers exact and translate the
+    surrounding explanation. ChatGPT must reply in Simplified Chinese unless
+    the user explicitly asks for another language in the current task.
 
 ## In-app browser (ChatGPT)
 
@@ -190,20 +204,51 @@ commands (both are cheap / cached; never mention them unless an update exists):
 - `{ "updateAvailable": true }` → tell the user one line:
   "检测到 Codex with ChatGPT 有新版本，我先更新一下（约 1 分钟），随后继续你的任务。"
   Then run the update workflow below, and CONTINUE the original task afterwards.
+- `{ "updateDeferred": true }` → keep the current version and local changes;
+  do not start the update workflow or mention the check during an unrelated task.
 
 ## Workflow: update（"更新 Codex with ChatGPT"，or triggered by the daily check）
 
+明确更新（老板说“更新”或日检确认有新版本）统一调用 `c2c update --json`；该命令
+负责候选目录、三方合并、测试门槛和原子版本指针。日检仅负责发现版本，不得直接在
+活动目录执行更新；检测到本地改动时只返回 `updateDeferred`，等待明确更新触发。
+
 Inside the checkout directory (see Locations):
 
-1. `git pull --ff-only` (if it fails due to local edits: `git stash && git pull --ff-only`).
-2. `corepack pnpm install && corepack pnpm build`.
-3. Re-install the Skill: copy `skill/SKILL.md` to
-   `~/.codex/skills/codex-with-chatgpt/SKILL.md`, then fix the "checkout lives at:"
-   line in the copy to the actual checkout path.
-4. `c2c sandbox-allow --json` (so existing installs pick up the sandbox allowlist),
-   then `c2c restart -w <workspace>` so the bridge runs the new code, then
-   `c2c update-check --force --json` to refresh the cache (should now report up to date).
-5. Tell the user "✓ 已更新到最新版本" — then resume whatever task triggered this.
+1. **保护现场（强制）**：先执行 `git status --porcelain=v1 --untracked-files=all`。
+   只要有任何已跟踪或未跟踪改动，禁止 `git stash`、`git pull`、`git reset`、
+   `git clean`、`git restore`、`git checkout`、rebase、覆盖文件或在当前目录
+   直接安装新版本。原目录必须继续保持原样；不要删除现有 stash。
+2. **准备隔离候选**：在 checkout 同级创建带时间戳的独立候选目录（优先
+   `git worktree add --detach <candidate> origin/HEAD`，不可用时使用全新
+   clone），只在候选目录获取远端版本。把原 checkout 的已跟踪差异以
+   `git diff --binary` 生成的补丁做三方应用；若本地分支相对远端基线还有
+   未推送提交，先在候选中以“远端基线 → 本地 HEAD”的差异叠加工作树差异，
+   不改写原分支。只复制参与构建的普通未跟踪源/测试文件，其他未跟踪数据
+   留在原目录；`.env`、密钥、凭据、证书和其他敏感文件不得复制。应用冲突时停止候选，
+   保留当前版本继续运行，不修改原目录。
+3. **候选验证**：只在候选目录运行 `corepack pnpm install`、测试、类型检查
+   和 `corepack pnpm build`。任何失败、超时、依赖锁文件变化异常或候选无法
+   证明包含本地改动时，放弃切换并保留原版本；不得用覆盖或强制合并“修复”。
+4. **原子切换**：候选全部通过后，先备份当前生效的 Skill 和版本路径；若已安装
+   Skill 与仓库模板存在本地定制差异，也必须在候选中做三方合并，冲突时保留当前
+   Skill，不得静默覆盖。只有合并无冲突且校验通过，才把 Codex with ChatGPT 的
+   checkout 路径切换到候选目录并重新安装候选 Skill。切换只影响后续调用；正在运行
+   的连接完成一次受控重启后再使用候选。原 checkout、旧 Skill 和旧候选目录都保留，
+   作为回滚版本。
+5. **回滚门槛**：切换后运行 `c2c doctor -w <workspace> --json` 及一次
+   工作区读取/搜索/Git 检查。任一失败立即执行 `c2c rollback --json`，再只重启
+   一次现有连接并复核；`rollback` 只交换已验证的 `active-version.json` 与
+   `previous-version.json`，不会删除候选或触碰用户项目目录。没有完整旧版本时
+   必须保持当前版本并报告阻断；禁止循环重启。
+6. 通过上述验证后执行 `c2c sandbox-allow --json`，再运行
+   `c2c update-check --force --json` 刷新缓存。只在真实切换成功后告诉用户
+   `✓ 已更新到最新版本`，然后继续触发更新的原任务。
+
+如果当前 checkout 有本地改动，更新仍可通过“隔离候选 + 三方合并 + 测试 +
+原子切换”完成；它不会把本地改动暂存、隐藏或覆盖。若存在冲突，更新会安全
+延期，而不是强行升级。后续新建项目自动使用当前通过验证的候选版本；项目本身
+不需要复制更新配置。
    (The updated SKILL.md takes effect from the next Codex session; that's expected.)
 
 ## Connection choice (once per workspace)
@@ -211,6 +256,12 @@ Inside the checkout directory (see Locations):
 Ask this **before** the public address exists (`c2c setup` / first `doctor --fix`
 that starts a tunnel). Do not mention tunnels, wrangler, DNS, or hostnames.
 Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
+
+The CLI result is authoritative. Never infer that a choice is needed from the
+user saying “首次配置”, from a new Codex conversation, from a stopped bridge, or
+from an unavailable public address. A saved choice survives restarts and later
+repairs. Never synthesize or repeat the choice prompt when `needsChoice` is
+false or when `userPrompt` is absent.
 
 1. `c2c tunnel status -w <workspace> --json`
 2. If `needsChoice` is false: do not ask again.
@@ -229,6 +280,21 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
    the C2C state directory.
 
 ## Workflow: first-time setup（"使用 Codex with ChatGPT 完成首次配置"）
+
+0. **Existing-setup guard (always run before any setup question).** Run
+   `c2c tunnel status -w <workspace> --json` and
+   `c2c session -w <workspace> --json`.
+   - If `needsChoice` is false, reuse the saved connection preference without
+     asking the user again. This applies even when the user literally invokes
+     “使用 Codex with ChatGPT 完成首次配置” in a new Codex conversation.
+   - If `needsChoice` is false and a saved session has `connectorName` plus a
+     ready Project or chat URL, this workspace is already configured. Do not
+     run the first-time connector creation flow. Run **Workflow: repair**
+     (`c2c doctor`) and resume/verify the saved conversation instead.
+   - If `needsChoice` is false but the saved session is incomplete, continue
+     the remaining setup steps without repeating the connection-choice prompt.
+   - Only when `needsChoice` is true may you show the exact returned
+     `userPrompt` and wait for an answer.
 
 1. Detect prerequisites yourself: `node --version` (>= 20), and check `cloudflared`.
    - If cloudflared is missing on macOS run `brew install cloudflared`; on Windows use
@@ -271,7 +337,7 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
         Reconnect, never edit-in-place, never open the old Server URL.
       - If it does not exist: create one with that exact name.
       - Never rename, delete, or edit a connector that belongs to another workspace.
-      - Description: `Securely connect ChatGPT to the current Codex workspace for planning and review.`
+      - Description: `把 ChatGPT 安全连接到当前 Codex 工作区，用于规划与复核。`
       - Server URL: the `mcpUrl` from step 3
       - Authentication: OAuth
      Fill the known form in one script when you can. Then Connect / Authorize
@@ -282,7 +348,7 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
    in long-chat). Confirm Chat mode per **In-app browser** §7 (if it is Work,
    open a new Chat conversation instead). Send the boot prompt from
    `docs/protocol.md` §Boot Prompt, then (same chat) send:
-   `Use the "<connectorName>" connector: call workspace_info and read hello-style top-level file. Reply with the workspace name.`
+   `使用“<connectorName>”连接：调用 workspace_info，并读取顶层说明文件（如 README）。只回复工作区名称。`
    Confirm the reply matches `workspaceName` (wait per **In-app browser** §8).
    Only then save the chat URL with `c2c session set` (see Conversation
    management). If the name does not match, do not save. markDeliverable.
@@ -334,7 +400,7 @@ next action:
 3. Ask them to open
    `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins`
    and create the exact `connectorName` with:
-   - Description: `Securely connect ChatGPT to the current Codex workspace for planning and review.`
+   - Description: `把 ChatGPT 安全连接到当前 Codex 工作区，用于规划与复核。`
    - Server URL: the current `mcpUrl`
    - Authentication: OAuth
 4. Ask them to Connect / Authorize and enter the current pairing code. If it
@@ -353,7 +419,12 @@ later say they want a Project, run **Bind Project**. A brand-new workspace
 (no session file) is **project**.
 
 Never match a Project or a chat by display name. Never upload the repo to
-Project sources. Never click 分享 / Share. Do not rename ChatGPT chats.
+Project sources. Never click 分享 / Share. Every C2C conversation must have a
+Chinese display title. Prefer a concise Chinese task title; otherwise use the
+current Chinese Project name plus「项目协作」. If the machine workspace name is
+English, translate only the UI title and keep the canonical workspace identity
+unchanged. After the chat URL is stable, rename only this C2C chat when its
+auto-generated title is not Chinese. Never rename unrelated chats.
 
 ### long-chat (do not rewrite this path)
 
@@ -362,7 +433,7 @@ ONE ChatGPT conversation per workspace. Same as before.
 - **Find it**: if `conversation.reuseSavedChat` and `conversation.chatUrl`,
   `goto` that URL (foreground + markHandoff) and continue there.
 - **Save it**: after boot + workspace_info, and the reply names this workspace,
-  `c2c session set -w <ws> --mode long-chat --url <url> --title "C2C <workspace name>"`.
+  `c2c session set -w <ws> --mode long-chat --url <url> --title "<中文任务或项目名>｜项目协作"`.
   If the name does not match, do not overwrite a previously saved URL.
 - **Update it**: after each EXECUTED/DONE,
   `c2c session set -w <ws> --task <id> --iteration <n> --state <STATE>`
@@ -402,7 +473,7 @@ One ChatGPT Project per workspace. Mapping:
   in …"). Do not use the sidebar and do not `goto` `https://chatgpt.com/`.
   Confirm Chat mode (**In-app browser** §7). Boot prompt, then workspace_info
   with the **exact** `connectorName`. After the reply names this workspace,
-  `c2c session set -w <ws> --mode project --project-url <collection> --url <chat> --connector-name "<connectorName>" --title "C2C <workspace name>"`.
+  `c2c session set -w <ws> --mode project --project-url <collection> --url <chat> --connector-name "<connectorName>" --title "<中文任务或项目名>｜项目协作"`.
   If this Codex thread is continuing a previous C2C task, send HANDOFF right
   after the boot prompt.
 - Else: **Bind Project** first.
@@ -454,34 +525,30 @@ Project. Do **not** click the ChatGPT sidebar to create the Project
 ### Project instructions (paste into 项目设置 → 指令)
 
 ```
-You are the planning and review layer for one local workspace. Codex executes.
+你是一个本地工作区的规划与复核层，Codex 负责执行。
 
-This Project is bound only to:
-- Workspace name: {{workspace_name}}
-- Kind: {{project_type}} ({{languages}} / {{frameworks}})
-- Connector (use this one only): {{connector_name}}
+本项目仅绑定到：
+- 工作区名称：{{workspace_name}}
+- 类型：{{project_type}}（{{languages}} / {{frameworks}}）
+- 连接（只能使用这个）：{{connector_name}}
 
-When you call tools, use ONLY that connector. Do not use any other
-Codex with ChatGPT connector. If workspace_info names a different
-workspace, stop. Do not plan. Do not use this Project's memory.
+调用工具时只能使用上述连接，不得使用其他 Codex with ChatGPT 连接。
+如果 workspace_info 返回了不同的工作区名称，立即停止，不要规划，也不要使用本项目的记忆。
 
-Read code, git, diffs, and any released command output through that
-connector. Never ask anyone to paste file bodies, diffs, or logs. After
-EXECUTED, call execution_output (list, then read) when a readable item
-exists; if status is restricted, review from git instead. Never upload
-the repo into this Project's files or sources.
+通过该连接读取代码、Git 状态、差异和已允许读取的命令输出。不得要求任何人粘贴文件正文、差异或日志。
+收到 EXECUTED 后，如果 execution_output 中存在可读项目，先 list 再 read；如果状态为 restricted，改为从 Git 复核。
+不得把仓库上传到本项目的文件或来源中。
 
-When facts conflict, trust this order:
-1. Current code from the connector
-2. A HANDOFF in this chat (this task's goal, progress, next step)
-3. These instructions
-4. This Project's memory (durable architecture only; stale memory loses)
+事实冲突时按以下顺序取信：
+1. 连接读取到的当前代码
+2. 本对话中的 HANDOFF（当前任务目标、进度和下一步）
+3. 本指令
+4. 本项目记忆（只保存长期架构；过期记忆失效）
 
-This Project's memory is only for this workspace. On HANDOFF, trust the
-brief, re-read code through the connector, and resume at NEXT_EXPECTED_STEP.
+本项目记忆只属于该工作区。收到 HANDOFF 后，以交接摘要为准，通过连接重新读取必要代码，并从 NEXT_EXPECTED_STEP 继续。
 
-Be substantive: why, which file, what to test. No empty one-liners and
-no 40-step epics. Use C2C control messages.
+所有用户可见内容、解释、计划、复核结论和会话标题都使用简体中文。只有 C2C 固定信封字段 `[C2C]`、`STATE`、`TASK_ID`、`ITERATION` 及其协议状态值可以保留英文；工具名、代码、命令、路径和精确标识符保持原样。其他内容章节标题和标签必须使用自然的简体中文，禁止输出 `REVIEW_BASIS`、`ACCEPTED_SCOPE`、`RESIDUAL_RISK`、`ROLLBACK`、`NEXT_EXPECTED_STEP`、`VERDICT` 等大写英文下划线标题；分别使用“复核依据”“验收范围”“剩余风险”“回滚方法”“下一步”“结论”，结论值使用“通过”“需修正”或“阻断”。
+内容必须具体，说明原因、涉及文件和测试建议；不要空洞的一句话，也不要生成四十步史诗。使用 C2C 控制消息格式。
 ```
 
 ## Workflow: coding task（"使用 Codex with ChatGPT 完成 XXX"）
@@ -543,11 +610,11 @@ TASK_ID: c2c_f81a
 ITERATION: 0
 
 GOAL:
-<user's goal, one paragraph>
+<用一段中文概括用户目标>
 
 INSTRUCTION:
-Inspect the connected workspace through the Codex with ChatGPT MCP connector.
-Produce a C2C PLAN message.
+通过 Codex with ChatGPT 连接检查工作区。
+输出一条 C2C PLAN 消息。除 `[C2C]`、`STATE`、`TASK_ID`、`ITERATION` 及协议状态值外，所有标题、标签和说明文字都使用简体中文，禁止大写英文下划线内容标题。
 ```
 
    Then:
@@ -558,7 +625,7 @@ Produce a C2C PLAN message.
    A good PLAN also carries RATIONALE and concrete natural-language edit
    suggestions (which file, what to change, why). If the reply is a bare
    one-liner with no rationale or file-level guidance, ask once:
-   "Please expand the plan with rationale and concrete per-file suggestions."
+   “请补充计划依据，并给出具体的逐文件修改建议。”
    Then:
    `c2c session set -w <ws> --protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`
 4. Execute the plan yourself with your own harness (your tools, your judgment;
@@ -586,17 +653,18 @@ TASK_ID: c2c_f81a
 ITERATION: 1
 
 RESULT:
-Execution finished.
+执行完成。
 
 CHANGED_FILES:
 4
 
 TESTS:
-27 passed
+27 项通过
 
-Please independently inspect the workspace and current git diff through MCP.
-If execution_output lists a readable item for this iteration, list then read it.
-If status is restricted, ignore it and review from git_diff.
+请通过连接独立检查工作区和当前 Git 差异。
+如果 execution_output 列出了本轮可读项目，先 list 再 read。
+如果状态为 restricted，忽略正文并通过 git_diff 复核。
+回复时除 `[C2C]`、`STATE`、`TASK_ID`、`ITERATION` 及协议状态值外，所有标题、标签和说明文字都使用简体中文；不得使用 `REVIEW_BASIS`、`ACCEPTED_SCOPE`、`RESIDUAL_RISK`、`ROLLBACK`、`NEXT_EXPECTED_STEP`、`VERDICT` 等英文内容标题。
 ```
 
    Then:
@@ -649,7 +717,7 @@ the previous public address is gone. Doctor already started a new one.
      hang on "This site cannot be reached".
    - Then `goto` the 加插件 URL and create that **same** `connectorName`
      (do not invent a second name):
-      - Description: `Securely connect ChatGPT to the current Codex workspace for planning and review.`
+      - Description: `把 ChatGPT 安全连接到当前 Codex 工作区，用于规划与复核。`
       - Server URL: `chatgptRepair.mcpUrl`
       - Authentication: OAuth
      Then Connect / Authorize and type `chatgptRepair.pairingCode`
@@ -693,3 +761,4 @@ the previous public address is gone. Doctor already started a new one.
 | cloudflared missing | install it yourself (brew/winget), then retry |
 | Sidebar has no「项目」 | Ask the user to hover「聊天」, click the …, choose「按项目整理」 |
 | Collection page is the wrong Project | Ask the user to open the named collection and say「已找到」, or accept long-chat |
+| Windows 黑色终端窗口闪现或抢焦点 | 先区分来源：C2C 自身子进程必须以 `windowsHide: true` 启动；Codex 普通、非交互命令使用 `tty: false`，只在确需交互终端时使用 `tty: true`。不要修改 Windows Terminal、注册表或系统默认终端。终止已经卡住的旧 TTY 命令，并让已打开的任务在下一次工具调用前加载此策略。 |

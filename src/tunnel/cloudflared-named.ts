@@ -10,10 +10,16 @@ const HOSTNAME_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a
 
 export interface CloudflaredNamedTunnelOptions {
   tunnelName: string;
+  tunnelId?: string;
   hostname: string;
   logger?: Logger;
   binaryOverride?: string;
   startTimeoutMs?: number;
+  spawnImpl?: (
+    command: string,
+    args: string[],
+    options: { stdio: ["ignore", "pipe", "pipe"]; windowsHide: boolean }
+  ) => ChildProcess;
 }
 
 export function normalizeNamedTunnelHostname(hostname: string): string {
@@ -34,10 +40,12 @@ export function normalizeNamedTunnelHostname(hostname: string): string {
 export class CloudflaredNamedTunnel implements TunnelProvider {
   readonly name = "cloudflare-named";
   private readonly tunnelName: string;
+  private readonly tunnelId?: string;
   private readonly hostname: string;
   private readonly logger: Logger;
   private readonly binaryOverride?: string;
   private readonly startTimeoutMs: number;
+  private readonly spawnImpl: NonNullable<CloudflaredNamedTunnelOptions["spawnImpl"]>;
   private child: ChildProcess | null = null;
   private connected = false;
   private lastError: string | null = null;
@@ -48,10 +56,12 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       throw new Error("Named tunnel name must be between 1 and 128 characters");
     }
     this.tunnelName = tunnelName;
+    this.tunnelId = opts.tunnelId?.trim() || undefined;
     this.hostname = normalizeNamedTunnelHostname(opts.hostname);
     this.logger = opts.logger ?? nullLogger;
     this.binaryOverride = opts.binaryOverride;
     this.startTimeoutMs = opts.startTimeoutMs ?? 45_000;
+    this.spawnImpl = opts.spawnImpl ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
   }
 
   private binary(): string | null {
@@ -72,7 +82,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     }
 
     return new Promise<string>((resolve, reject) => {
-      const child = spawn(
+      const child = this.spawnImpl(
         bin,
         [
           "tunnel",
@@ -80,7 +90,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
           "--url",
           `http://127.0.0.1:${localPort}`,
           "run",
-          this.tunnelName,
+          this.tunnelId ?? this.tunnelName,
         ],
         { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
       );

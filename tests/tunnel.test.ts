@@ -9,7 +9,10 @@ import {
   parseQuickTunnelUrl,
   type CloudflaredQuickTunnelOptions,
 } from "../src/tunnel/cloudflared.js";
-import { normalizeNamedTunnelHostname } from "../src/tunnel/cloudflared-named.js";
+import {
+  CloudflaredNamedTunnel,
+  normalizeNamedTunnelHostname,
+} from "../src/tunnel/cloudflared-named.js";
 import { hostnameSlug, parseZoneInput, suggestedNamedHostname } from "../src/tunnel/hostname.js";
 import {
   chooseQuickTunnel,
@@ -108,7 +111,7 @@ describe("CloudflaredQuickTunnel", () => {
     expect(spawnImpl).toHaveBeenCalledWith(
       "cloudflared",
       ["tunnel", "--url", "http://127.0.0.1:3333", "--no-autoupdate"],
-      { stdio: ["ignore", "pipe", "pipe"] }
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
     );
     expect(fetchImpl).toHaveBeenCalledWith(`${QUICK_URL}/health`, {
       redirect: "error",
@@ -201,6 +204,49 @@ describe("CloudflaredQuickTunnel", () => {
     expect(cancelBody).toHaveBeenCalledTimes(1);
     await tunnel.stop();
   });
+
+  it("replaces an unreachable Quick Tunnel address before resolving", async () => {
+    const first = new FakeCloudflaredProcess();
+    const second = new FakeCloudflaredProcess();
+    const children = [first, second];
+    const spawnImpl = vi.fn(() => {
+      const child = children.shift();
+      if (!child) throw new Error("unexpected extra spawn");
+      queueMicrotask(() => announceUrl(child));
+      return child as unknown as ChildProcess;
+    });
+    let calls = 0;
+    const tunnel = new CloudflaredQuickTunnel(undefined, "cloudflared", {
+      spawnImpl,
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) throw new TypeError("fetch failed");
+        return healthResponse();
+      },
+      maxStartAttempts: 2,
+      maxConsecutiveHealthErrors: 1,
+      startRetryDelayMs: 0,
+      protocol: "http2",
+    });
+
+    await expect(tunnel.start(3333)).resolves.toBe(QUICK_URL);
+    expect(spawnImpl).toHaveBeenCalledTimes(2);
+    expect(spawnImpl).toHaveBeenCalledWith(
+      "cloudflared",
+      [
+        "tunnel",
+        "--protocol",
+        "http2",
+        "--url",
+        "http://127.0.0.1:3333",
+        "--no-autoupdate",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+    );
+    expect(first.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(tunnel.status()).toMatchObject({ running: true, url: QUICK_URL });
+    await tunnel.stop();
+  });
 });
 
 describe("normalizeNamedTunnelHostname", () => {
@@ -211,6 +257,39 @@ describe("normalizeNamedTunnelHostname", () => {
   it("rejects URLs and invalid hostnames", () => {
     expect(() => normalizeNamedTunnelHostname("https://dev.getremi.xyz")).toThrow(/invalid/i);
     expect(() => normalizeNamedTunnelHostname("localhost")).toThrow(/invalid/i);
+  });
+});
+
+describe("CloudflaredNamedTunnel", () => {
+  it("starts cloudflared without a visible Windows console", async () => {
+    const child = new FakeCloudflaredProcess();
+    const spawnImpl = vi.fn(() => child as unknown as ChildProcess);
+    const tunnel = new CloudflaredNamedTunnel({
+      tunnelName: "c2c-demo",
+      tunnelId: "11111111-1111-1111-1111-111111111111",
+      hostname: "c2c-demo.example.com",
+      binaryOverride: "cloudflared",
+      spawnImpl,
+      startTimeoutMs: 1_000,
+    });
+
+    const starting = tunnel.start(3333);
+    child.stderr.write("INF Registered tunnel connection\n");
+
+    await expect(starting).resolves.toBe("https://c2c-demo.example.com");
+    expect(spawnImpl).toHaveBeenCalledWith(
+      "cloudflared",
+      [
+        "tunnel",
+        "--no-autoupdate",
+        "--url",
+        "http://127.0.0.1:3333",
+        "run",
+        "11111111-1111-1111-1111-111111111111",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+    );
+    await tunnel.stop();
   });
 });
 

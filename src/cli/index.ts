@@ -56,6 +56,7 @@ import {
 } from "../session/state.js";
 import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
+import { defaultInstalledSkillPath, performSafeUpdate, rollbackActiveVersion } from "../update/safe-update.js";
 
 const program = new Command();
 
@@ -786,6 +787,7 @@ function runGit(args: string[]): { ok: boolean; stdout: string } {
     encoding: "utf8",
     timeout: 8000,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    windowsHide: true,
   });
   return { ok: result.status === 0, stdout: (result.stdout ?? "").trim() };
 }
@@ -798,7 +800,7 @@ program
   .action((opts: { force: boolean; json: boolean }) => {
     const file = path.join(getStateDir(), "update-check.json");
     const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in local tz
-    let last: { date?: string; updateAvailable?: boolean } = {};
+    let last: { date?: string; updateAvailable?: boolean; updateDeferred?: boolean } = {};
     try {
       last = JSON.parse(fs.readFileSync(file, "utf8")) as typeof last;
     } catch {
@@ -808,6 +810,7 @@ program
     const emit = (data: {
       checked: boolean;
       updateAvailable: boolean;
+      updateDeferred?: boolean;
       localCommit?: string;
       remoteCommit?: string;
       note?: string;
@@ -818,7 +821,12 @@ program
     };
 
     if (!opts.force && last.date === today) {
-      emit({ checked: false, updateAvailable: last.updateAvailable ?? false, note: "今天已检查过更新。" });
+      emit({
+        checked: false,
+        updateAvailable: last.updateAvailable ?? false,
+        updateDeferred: last.updateDeferred ?? false,
+        note: last.updateDeferred ? "检测到本地改动，已保留当前版本并跳过自动更新。" : "今天已检查过更新。",
+      });
       return;
     }
 
@@ -831,10 +839,60 @@ program
       return;
     }
     const remoteCommit = remote.stdout.split(/\s/)[0];
-    const updateAvailable = remoteCommit !== local.stdout;
+    const dirty = runGit(["status", "--porcelain=v1", "--untracked-files=all"]).stdout.length > 0;
+    const updateDeferred = dirty && remoteCommit !== local.stdout;
+    const updateAvailable = !dirty && remoteCommit !== local.stdout;
     fs.mkdirSync(getStateDir(), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ date: today, updateAvailable, remoteCommit }), { mode: 0o600 });
-    emit({ checked: true, updateAvailable, localCommit: local.stdout, remoteCommit });
+    fs.writeFileSync(file, JSON.stringify({ date: today, updateAvailable, updateDeferred, remoteCommit }), { mode: 0o600 });
+    emit({
+      checked: true,
+      updateAvailable,
+      updateDeferred,
+      localCommit: local.stdout,
+      remoteCommit,
+      note: updateDeferred ? "检测到本地改动，已保留当前版本并跳过自动更新。" : undefined,
+    });
+  });
+
+program
+  .command("update")
+  .description("Safely update in an isolated candidate and switch only after validation")
+  .option("--json", "machine-readable output", false)
+  .option("--skip-validation", "internal tests only; never used by the Skill", false)
+  .action((opts: { json: boolean; skipValidation: boolean }) => {
+    const result = performSafeUpdate({
+      repoRoot,
+      stateDir: getStateDir(),
+      installedSkillPath: defaultInstalledSkillPath(),
+      validate: !opts.skipValidation,
+      allowDirtyCandidate: true,
+    });
+    if (opts.json) {
+      say(JSON.stringify({ version: VERSION, ...result }));
+      if (!result.ok) process.exitCode = 1;
+      return;
+    }
+    if (result.status === "updated") check(`已在隔离候选中完成验证并切换到 ${result.activeVersion?.slice(0, 8)}`);
+    else if (result.status === "up_to_date") say("已是最新版本。");
+    else if (result.status === "deferred_dirty") say("检测到本地改动，已保留当前版本并跳过更新。");
+    else cross(result.reason ?? "更新未切换，当前版本继续运行。");
+    if (!result.ok) process.exitCode = 1;
+  });
+
+program
+  .command("rollback")
+  .description("Rollback to the previously verified plugin version")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { json: boolean }) => {
+    const result = rollbackActiveVersion(getStateDir());
+    if (opts.json) {
+      say(JSON.stringify({ version: VERSION, ...result }));
+      if (!result.ok) process.exitCode = 1;
+      return;
+    }
+    if (result.ok) check(`已回滚到 ${result.activeVersion?.slice(0, 8) ?? "上一版本"}；请重启现有连接使其生效。`);
+    else cross(result.reason ?? "没有可回滚的版本。");
+    if (!result.ok) process.exitCode = 1;
   });
 
 // ---------------------------------------------------------------- session (ChatGPT conversation / Project memory)

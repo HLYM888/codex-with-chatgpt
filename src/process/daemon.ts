@@ -11,11 +11,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Path to the CLI entry, works from dist/ and from tsx dev runs. */
 function cliEntry(): { cmd: string; args: string[] } {
   const distEntry = path.resolve(__dirname, "..", "cli", "index.js");
+  const projectRoot = path.resolve(__dirname, "..", "..");
+  const stableLauncher = path.join(projectRoot, "bin", "c2c.js");
+  if (fs.existsSync(stableLauncher)) {
+    return { cmd: process.execPath, args: [stableLauncher] };
+  }
   if (fs.existsSync(distEntry)) {
     return { cmd: process.execPath, args: [distEntry] };
   }
   // dev fallback: run TypeScript sources through the tsx ESM loader
-  const projectRoot = path.resolve(__dirname, "..", "..");
   const tsEntry = path.join(projectRoot, "src", "cli", "index.ts");
   return { cmd: process.execPath, args: ["--import", "tsx/esm", tsEntry] };
 }

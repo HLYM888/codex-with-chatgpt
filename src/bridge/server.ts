@@ -22,11 +22,14 @@ function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider
   if (binding) {
     return new CloudflaredNamedTunnel({
       tunnelName: binding.tunnelName,
+      tunnelId: binding.tunnelId,
       hostname: binding.hostname,
       logger,
     });
   }
-  return new CloudflaredQuickTunnel(logger);
+  return new CloudflaredQuickTunnel(logger, undefined, {
+    protocol: "http2",
+  });
 }
 
 export interface BridgeOptions {
