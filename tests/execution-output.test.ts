@@ -205,6 +205,22 @@ describe("readCappedUtf8", () => {
     expect(readCappedUtf8(file, 4)).toEqual({ text: "A", sourceTruncated: true, encoding: "utf8" });
   });
 
+  it("decodes a complete four-byte CP936/GB18030 prefix before considering an empty UTF-8 prefix", () => {
+    const dir = makeTmpDir("output-gb18030-cp936-prefix");
+    dirs.push(dir);
+    const file = path.join(dir, "out.log");
+    fs.writeFileSync(file, Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x41]));
+    expect(readCappedUtf8(file, 4)).toEqual({ text: "中文", sourceTruncated: true, encoding: "gb18030" });
+  });
+
+  it("keeps a complete four-byte GB18030 character at a capped prefix boundary", () => {
+    const dir = makeTmpDir("output-gb18030-four-byte-prefix");
+    dirs.push(dir);
+    const file = path.join(dir, "out.log");
+    fs.writeFileSync(file, Buffer.from([0x95, 0x32, 0x82, 0x36, 0x41]));
+    expect(readCappedUtf8(file, 4)).toEqual({ text: "𠀀", sourceTruncated: true, encoding: "gb18030" });
+  });
+
   it("does not silently discard an invalid byte in an uncapped file", () => {
     const dir = makeTmpDir("output-invalid-full");
     dirs.push(dir);

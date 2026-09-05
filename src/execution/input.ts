@@ -25,6 +25,7 @@ function decodeCommandBytes(bytes: Buffer, sourceTruncated: boolean): Pick<Cappe
 
   const maxBoundaryTrim = Math.min(4, bytes.length);
   for (let cut = bytes.length; cut >= bytes.length - maxBoundaryTrim; cut -= 1) {
+    if (bytes.length > 0 && cut === 0) continue;
     const candidate = bytes.subarray(0, cut);
     try {
       return { text: new TextDecoder("utf-8", { fatal: true }).decode(candidate), encoding: "utf8" };
@@ -33,6 +34,7 @@ function decodeCommandBytes(bytes: Buffer, sourceTruncated: boolean): Pick<Cappe
     }
   }
   for (let cut = bytes.length; cut >= bytes.length - maxBoundaryTrim; cut -= 1) {
+    if (bytes.length > 0 && cut === 0) continue;
     const candidate = bytes.subarray(0, cut);
     try {
       return { text: new TextDecoder("gb18030", { fatal: true }).decode(candidate), encoding: "gb18030" };
