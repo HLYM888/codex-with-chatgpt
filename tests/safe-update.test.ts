@@ -87,7 +87,7 @@ describe("safe update policy", () => {
         return args[2] === "HEAD" ? { status: 0, stdout: "diff --git a/src/index.ts b/src/index.ts\n", stderr: "" } : { status: 0, stdout: "", stderr: "" };
       }
       if (file === "git" && args[0] === "apply") return { status: options.applyStatus ?? 0, stdout: "", stderr: "" };
-      if (file === "corepack.cmd") return {
+      if (file === "corepack.cmd" || file === "corepack") return {
         status: options.validationStatus ?? 0,
         stdout: options.validationStdout ?? "",
         stderr: options.validationStderr ?? "",
@@ -183,6 +183,68 @@ describe("safe update policy", () => {
     expect(result.status).toBe("validation_failed");
     expect(result.reason).toContain("stderr: ERR_PNPM_LOCKFILE_MISSING");
     expect(result.reason).toContain("stdout: progress: resolved 1");
+  });
+
+  it("redacts tokens and home paths in validation diagnostics", () => {
+    const root = makeTmpDir("safe-update-validation-redaction");
+    const state = makeTmpDir("safe-update-validation-redaction-state");
+    tempDirs.push(root, state);
+    prepareSourceCheckout(root);
+    const token = "sk-proj-AuditSyntheticToken1234567890";
+    const homePath = "C:\\Users\\audit-user\\private\\note.txt";
+    const result = performSafeUpdate({
+      repoRoot: root,
+      stateDir: state,
+      run: fakeRunner({
+        validationStatus: 1,
+        validationStdout: `progress: ${token}`,
+        validationStderr: `api_key=${token}; path=${homePath}`,
+      }).run,
+      validate: true,
+      allowDirtyCandidate: true,
+    });
+    expect(result.status).toBe("validation_failed");
+    expect(result.reason).toContain("progress: [REDACTED]");
+    expect(result.reason).toContain("api_key=[REDACTED]");
+    expect(result.reason).toContain("C:\\Users\\[user]");
+    expect(result.reason).not.toContain(token);
+    expect(result.reason).not.toContain(homePath);
+  });
+
+  it("restricts private keys in validation diagnostics", () => {
+    const root = makeTmpDir("safe-update-validation-private-key");
+    const state = makeTmpDir("safe-update-validation-private-key-state");
+    tempDirs.push(root, state);
+    prepareSourceCheckout(root);
+    const privateKey = "-----BEGIN PRIVATE KEY-----\nAUDIT_SYNTHETIC\n-----END PRIVATE KEY-----";
+    const result = performSafeUpdate({
+      repoRoot: root,
+      stateDir: state,
+      run: fakeRunner({ validationStatus: 1, validationStderr: privateKey }).run,
+      validate: true,
+      allowDirtyCandidate: true,
+    });
+    expect(result.status).toBe("validation_failed");
+    expect(result.reason).toContain("[RESTRICTED: private_key]");
+    expect(result.reason).not.toContain(privateKey);
+  });
+
+  it("caps validation diagnostics on a UTF-8 byte boundary", () => {
+    const root = makeTmpDir("safe-update-validation-utf8");
+    const state = makeTmpDir("safe-update-validation-utf8-state");
+    tempDirs.push(root, state);
+    prepareSourceCheckout(root);
+    const result = performSafeUpdate({
+      repoRoot: root,
+      stateDir: state,
+      run: fakeRunner({ validationStatus: 1, validationStdout: "界".repeat(3_000) }).run,
+      validate: true,
+      allowDirtyCandidate: true,
+    });
+    expect(result.status).toBe("validation_failed");
+    expect(Buffer.byteLength(result.reason ?? "", "utf8")).toBeLessThanOrEqual(4_000);
+    expect(result.reason).toContain("…[输出已截断]");
+    expect(result.reason).not.toContain("�");
   });
 
   it.skipIf(process.platform !== "win32")("runs Windows Corepack validation through its Node CLI entry", () => {

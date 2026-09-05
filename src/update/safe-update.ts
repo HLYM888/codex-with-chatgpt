@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { sanitizeExecutionMetadata } from "../execution/sanitize.js";
 
 export type UpdateDecision = "up_to_date" | "deferred_dirty" | "candidate";
 
@@ -40,6 +41,8 @@ const SENSITIVE_SEGMENTS = [
 ];
 
 const UPDATE_LOCK_STALE_AFTER_MS = 30_000;
+const VALIDATION_REASON_MAX_BYTES = 4_000;
+const VALIDATION_REASON_TRUNCATION_MARKER = "…[输出已截断]";
 
 function resolveWindowsCorepackEntry(): string | null {
   const nodeDirectory = path.dirname(process.execPath);
@@ -62,18 +65,23 @@ function resolveWindowsCorepackEntry(): string | null {
 }
 
 function commandDiagnostics(result: CommandResult): string {
+  const stderr = sanitizeExecutionMetadata(result.stderr, VALIDATION_REASON_MAX_BYTES, VALIDATION_REASON_TRUNCATION_MARKER).trim();
+  const stdout = sanitizeExecutionMetadata(result.stdout, VALIDATION_REASON_MAX_BYTES, VALIDATION_REASON_TRUNCATION_MARKER).trim();
   const details = [
-    result.stderr.trim() ? `stderr: ${result.stderr.trim()}` : "",
-    result.stdout.trim() ? `stdout: ${result.stdout.trim()}` : "",
+    stderr ? `stderr: ${stderr}` : "",
+    stdout ? `stdout: ${stdout}` : "",
   ].filter(Boolean).join("; ");
   if (!details) return "";
-  const maxChars = 4_000;
-  return details.length <= maxChars ? details : `${details.slice(0, maxChars)}…[输出已截断]`;
+  return sanitizeExecutionMetadata(details, VALIDATION_REASON_MAX_BYTES, VALIDATION_REASON_TRUNCATION_MARKER);
 }
 
 function validationFailureReason(file: string, args: string[], result: CommandResult): string {
   const details = commandDiagnostics(result);
-  return `候选验证失败：${file} ${args.join(" ")}${details ? `；${details}` : ""}`;
+  return sanitizeExecutionMetadata(
+    `候选验证失败：${file} ${args.join(" ")}${details ? `；${details}` : ""}`,
+    VALIDATION_REASON_MAX_BYTES,
+    VALIDATION_REASON_TRUNCATION_MARKER,
+  );
 }
 
 function defaultRunner(file: string, args: string[], cwd: string, timeoutMs = 120_000): CommandResult {
