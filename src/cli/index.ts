@@ -657,6 +657,7 @@ program
       mcp: "MCP",
       oauth: "OAuth",
       tunnel: "Tunnel",
+      activation: "版本激活",
     };
     let allOk = true;
     for (const [key, value] of Object.entries(report)) {
