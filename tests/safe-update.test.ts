@@ -169,13 +169,13 @@ describe("safe update policy", () => {
     fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fixture", version: "0.0.0" }));
     fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
     fs.mkdirSync(path.join(root, "skill"), { recursive: true });
-    fs.writeFileSync(path.join(root, "skill", "SKILL.md"), "candidate-skill\n");
+    fs.writeFileSync(path.join(root, "skill", "SKILL.md"), "Checkout: <ACTUAL_CHECKOUT_PATH>\nCandidate template\n");
     prepareSourceCheckout(installed);
     fs.writeFileSync(path.join(installed, "dist", "cli", "index.js"), "old-production-entry");
     fs.writeFileSync(path.join(installed, "local-production-customization.txt"), "keep-local-customization\n");
     fs.mkdirSync(path.join(installed, "skill"), { recursive: true });
-    fs.writeFileSync(path.join(installed, "skill", "SKILL.md"), "old-production-skill\n");
-    fs.writeFileSync(installedSkill, "old-production-skill\n");
+    fs.writeFileSync(path.join(installed, "skill", "SKILL.md"), "Checkout: <ACTUAL_CHECKOUT_PATH>\nOld template\n");
+    fs.writeFileSync(installedSkill, `Checkout: ${installed}\nOld template\n`);
     const git = (cwd: string, ...args: string[]) => {
       const result = spawnSync("git", args, {
         cwd,
@@ -225,6 +225,7 @@ describe("safe update policy", () => {
     expect(result).toMatchObject({ ok: true, status: "updated", remoteCommit: candidateCommit });
     expect(result.candidateDir).toContain(`local-${candidateCommit.slice(0, 8)}`);
     expect(git(result.candidateDir!, "rev-parse", "HEAD")).toBe(candidateCommit);
+    expect(fs.readFileSync(installedSkill, "utf8").replaceAll("\r\n", "\n")).toBe(`Checkout: ${root}\nCandidate template\n`);
     const previous = JSON.parse(fs.readFileSync(path.join(state, "previous-version.json"), "utf8")) as { versionDir: string; commit: string };
     expect(previous.commit).toBe(installedCommit);
     expect(fs.readFileSync(path.join(previous.versionDir, "dist", "cli", "index.js"), "utf8")).toBe("old-production-entry");
@@ -232,7 +233,7 @@ describe("safe update policy", () => {
     const rolledBack = rollbackActiveVersion(state, installedSkill);
     expect(rolledBack).toMatchObject({ ok: true, status: "rolled_back", activeVersion: installedCommit });
     expect(fs.readFileSync(path.join(JSON.parse(fs.readFileSync(path.join(state, "active-version.json"), "utf8")).versionDir, "dist", "cli", "index.js"), "utf8")).toBe("old-production-entry");
-    expect(fs.readFileSync(installedSkill, "utf8")).toBe("old-production-skill\n");
+    expect(fs.readFileSync(installedSkill, "utf8").replaceAll("\r\n", "\n")).toBe(`Checkout: ${installed}\nOld template\n`);
   });
 
   it("blocks a first update when the installed checkout cannot be staged for rollback", () => {

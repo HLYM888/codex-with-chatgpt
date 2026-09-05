@@ -421,6 +421,28 @@ function readGitHead(directory: string, run: Runner): string | null {
   return result.status === 0 && FULL_COMMIT.test(head) ? head : null;
 }
 
+function readRegularCloneHead(directory: string, run: Runner): string | null {
+  const gitMetadata = path.join(directory, ".git");
+  let metadataStat: fs.Stats;
+  try {
+    metadataStat = fs.lstatSync(gitMetadata);
+  } catch {
+    return null;
+  }
+  if (!metadataStat.isDirectory() || metadataStat.isSymbolicLink()) return null;
+  try {
+    if (!samePath(fs.realpathSync(gitMetadata), gitMetadata)) return null;
+  } catch {
+    return null;
+  }
+  const gitDir = git(directory, ["rev-parse", "--git-dir"], run);
+  const commonDir = git(directory, ["rev-parse", "--git-common-dir"], run);
+  if (gitDir.status !== 0 || commonDir.status !== 0) return null;
+  if (!samePath(path.resolve(directory, gitDir.stdout.trim()), gitMetadata)) return null;
+  if (!samePath(path.resolve(directory, commonDir.stdout.trim()), gitMetadata)) return null;
+  return readGitHead(directory, run);
+}
+
 function writeSourceSnapshotIdentity(directory: string, commit: string): void {
   const identity: VersionIdentity = { schemaVersion: "1.0.0", kind: "source-snapshot", commit };
   atomicWrite(path.join(directory, VERSION_IDENTITY_FILE), JSON.stringify(identity, null, 2));
@@ -429,25 +451,21 @@ function writeSourceSnapshotIdentity(directory: string, commit: string): void {
 function candidateIdentityMatches(directory: string, expectedCommit: string, run: Runner): boolean {
   if (!FULL_COMMIT.test(expectedCommit)) return false;
   const gitMetadata = path.join(directory, ".git");
-  let hasGitMetadata = false;
   try {
     fs.lstatSync(gitMetadata);
-    hasGitMetadata = true;
   } catch {
     /* materialized source snapshots intentionally have no .git metadata */
+    const identityFile = path.join(directory, VERSION_IDENTITY_FILE);
+    if (!regularFile(identityFile)) return false;
+    try {
+      const identity = JSON.parse(fs.readFileSync(identityFile, "utf8")) as Partial<VersionIdentity>;
+      return identity.schemaVersion === "1.0.0" && identity.kind === "source-snapshot" && identity.commit?.toLowerCase() === expectedCommit.toLowerCase();
+    } catch {
+      return false;
+    }
   }
-  if (hasGitMetadata) {
-    const head = readGitHead(directory, run);
-    return head !== null && head.toLowerCase() === expectedCommit.toLowerCase();
-  }
-  const identityFile = path.join(directory, VERSION_IDENTITY_FILE);
-  if (!regularFile(identityFile)) return false;
-  try {
-    const identity = JSON.parse(fs.readFileSync(identityFile, "utf8")) as Partial<VersionIdentity>;
-    return identity.schemaVersion === "1.0.0" && identity.kind === "source-snapshot" && identity.commit?.toLowerCase() === expectedCommit.toLowerCase();
-  } catch {
-    return false;
-  }
+  const head = readRegularCloneHead(directory, run);
+  return head !== null && head.toLowerCase() === expectedCommit.toLowerCase();
 }
 
 function validateInstalledSource(sourceDir: string, run: Runner): { root: string; head: string } | null {
@@ -591,15 +609,21 @@ function materializeSkillContent(value: string, repoRoot: string, roots: string[
   return materialized;
 }
 
-function planSkillInstall(repoRoot: string, candidateDir: string, installedSkillPath: string, additionalRoots: string[] = []): SkillPlan {
+function planSkillInstall(
+  baselineRoot: string,
+  candidateDir: string,
+  installedSkillPath: string,
+  additionalRoots: string[] = [],
+  outputRoot = baselineRoot,
+): SkillPlan {
   const candidateSkill = path.join(candidateDir, "skill", "SKILL.md");
   if (!fs.existsSync(candidateSkill)) return { action: "none" };
   try {
     const candidate = fs.readFileSync(candidateSkill, "utf8");
-    const roots = [repoRoot, candidateDir, ...additionalRoots, path.resolve(repoRoot), path.resolve(candidateDir)];
-    const materialized = materializeSkillContent(candidate, repoRoot, roots);
+    const roots = [baselineRoot, outputRoot, candidateDir, ...additionalRoots, path.resolve(baselineRoot), path.resolve(outputRoot), path.resolve(candidateDir)];
+    const materialized = materializeSkillContent(candidate, outputRoot, roots);
     if (!fs.existsSync(installedSkillPath)) return { action: "update", content: materialized };
-    const currentSource = path.join(repoRoot, "skill", "SKILL.md");
+    const currentSource = path.join(baselineRoot, "skill", "SKILL.md");
     const installed = fs.readFileSync(installedSkillPath, "utf8");
     const source = fs.readFileSync(currentSource, "utf8");
     if (normalizeSkillContent(installed, roots) !== normalizeSkillContent(source, roots)) {
@@ -755,8 +779,15 @@ function activateCandidateUnlocked(options: CandidateActivationOptions): SafeUpd
     }
   }
   const activeVersionDir = previous.versionDir;
+  const skillBaselineRoot = options.installedSourceDir ?? options.repoRoot;
   const skillPlan = options.installedSkillPath
-    ? planSkillInstall(options.repoRoot, candidateDir, options.installedSkillPath, activeVersionDir ? [activeVersionDir] : [])
+    ? planSkillInstall(
+        skillBaselineRoot,
+        candidateDir,
+        options.installedSkillPath,
+        activeVersionDir ? [activeVersionDir] : [],
+        options.repoRoot,
+      )
     : ({ action: "none" } as const);
   if (skillPlan.action === "error") {
     return { ok: false, status: "blocked", localCommit, remoteCommit, candidateDir, skippedUntracked, reason: skillPlan.reason };

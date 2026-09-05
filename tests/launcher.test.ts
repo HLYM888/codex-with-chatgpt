@@ -107,4 +107,21 @@ describe("stable launcher active-version gate", () => {
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}${result.stderr}`).toContain("活动版本无法安全加载");
   });
+
+  it("rejects a candidate whose .git is a Windows junction to an external checkout", () => {
+    const state = makeTmpDir("launcher-git-junction");
+    tempDirs.push(state);
+    const external = prepareCandidate(state, "external-git");
+    const candidate = prepareCandidate(state, "junction-git");
+    fs.rmSync(path.join(candidate.version, ".git"), { recursive: true, force: true });
+    try {
+      fs.symlinkSync(path.join(external.version, ".git"), path.join(candidate.version, ".git"), "junction");
+    } catch {
+      return;
+    }
+    fs.writeFileSync(path.join(state, "active-version.json"), JSON.stringify({ versionDir: candidate.version, commit: external.commit }));
+    const result = runLauncher(state);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain("活动版本无法安全加载");
+  });
 });
