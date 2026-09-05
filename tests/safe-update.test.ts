@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyUpdate, isCompleteCandidateVersion, isSafeUntrackedPath, performSafeUpdate, rollbackActiveVersion, shouldKeepOldVersion } from "../src/update/safe-update.js";
 import { cleanup } from "./helpers.js";
 
@@ -629,7 +629,7 @@ describe("safe update policy", () => {
     expect(isCompleteCandidateVersion(state, version, PNPM_COMMIT)).toBe(true);
   });
 
-  it("materializes pnpm directory links inside the rollback snapshot", () => {
+  it.each(process.platform === "win32" ? [false, true] : [false])("materializes pnpm rollback links and rejects native escape=%s", (nativeEscape) => {
     const candidate = makeTmpDir("safe-update-pnpm-candidate");
     const installed = makeTmpDir("safe-update-pnpm-installed");
     const state = makeTmpDir("safe-update-pnpm-state");
@@ -672,11 +672,18 @@ describe("safe update policy", () => {
         path.join(installed, "node_modules", "root-dep"),
         process.platform === "win32" ? "junction" : "dir",
       );
-    } catch {
-      return;
+    } catch (error) {
+      throw new Error("Cannot create required dependency-link fixture", { cause: error });
     }
 
-    const result = performSafeUpdate({
+    const nativeRealpath = fs.realpathSync.native;
+    const nativeSpy = nativeEscape ? vi.spyOn(fs.realpathSync, "native").mockImplementation((...args: Parameters<typeof nativeRealpath>) => {
+      const resolved = nativeRealpath(...args);
+      return String(args[0]).includes(`${path.sep}candidates${path.sep}`) && path.basename(String(args[0])) === "root-dep" ? installed : resolved;
+    }) : null;
+    let result;
+    try {
+      result = performSafeUpdate({
       repoRoot: candidate,
       stateDir: state,
       candidateSourceDir: candidate,
@@ -684,7 +691,16 @@ describe("safe update policy", () => {
       installedSourceDir: installed,
       validate: false,
       now: new Date("2026-09-05T06:00:00Z"),
-    });
+      });
+    } finally {
+      nativeSpy?.mockRestore();
+    }
+    if (nativeEscape) {
+      expect(result.status).toBe("blocked");
+      expect(fs.existsSync(path.join(state, "active-version.json"))).toBe(false);
+      expect(fs.existsSync(path.join(state, "previous-version.json"))).toBe(false);
+      return;
+    }
     expect(result).toMatchObject({ ok: true, status: "updated", localCommit: installedCommit, remoteCommit: candidateCommit });
     const previous = JSON.parse(fs.readFileSync(path.join(state, "previous-version.json"), "utf8")) as { versionDir: string; commit: string };
     expect(previous.commit).toBe(installedCommit);
@@ -692,6 +708,12 @@ describe("safe update policy", () => {
     const rollbackLink = path.join(previous.versionDir, "node_modules", "root-dep");
     expect(fs.lstatSync(rollbackLink).isSymbolicLink()).toBe(true);
     expect(fs.realpathSync(rollbackLink)).not.toBe(packageDirectory);
-    expect(fs.realpathSync(rollbackLink).toLowerCase()).toContain(path.resolve(previous.versionDir).toLowerCase());
+    const previousPhysicalRoot = process.platform === "win32" ? fs.realpathSync.native(previous.versionDir) : path.resolve(previous.versionDir);
+    const rollbackPhysicalTarget = process.platform === "win32" ? fs.realpathSync.native(rollbackLink) : fs.realpathSync(rollbackLink);
+    expect(rollbackPhysicalTarget.toLowerCase()).toContain(previousPhysicalRoot.toLowerCase());
+    if (process.platform === "win32") {
+      const previousPackageDirectory = path.join(previous.versionDir, "node_modules", ".pnpm", "root-dep@1", "node_modules", "root-dep");
+      expect(path.normalize(fs.readlinkSync(rollbackLink)).toLowerCase()).toBe(path.normalize(fs.realpathSync.native(previousPackageDirectory)).toLowerCase());
+    }
   });
 });

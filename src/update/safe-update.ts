@@ -579,6 +579,17 @@ function isWithinDirectory(root: string, candidate: string): boolean {
   return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
 }
 
+function nativeDependencyLinkTarget(targetRoot: string, targetResolved: string): string | null {
+  if (process.platform !== "win32") return targetResolved;
+  try {
+    const nativeRoot = fs.realpathSync.native(targetRoot);
+    const nativeTarget = fs.realpathSync.native(targetResolved);
+    return isWithinDirectory(nativeRoot, nativeTarget) ? nativeTarget : null;
+  } catch {
+    return null;
+  }
+}
+
 function copyDependencyTree(source: string, target: string): boolean {
   const sourceRoot = path.resolve(source);
   const targetRoot = path.resolve(target);
@@ -625,7 +636,9 @@ function copyDependencyTree(source: string, target: string): boolean {
       if (!isWithinDirectory(targetRoot, targetResolved) || !regularDirectory(targetResolved) || fs.existsSync(link.target)) {
         return false;
       }
-      fs.symlinkSync(targetResolved, link.target, process.platform === "win32" ? "junction" : "dir");
+      const linkTarget = nativeDependencyLinkTarget(targetRoot, targetResolved);
+      if (!linkTarget) return false;
+      fs.symlinkSync(linkTarget, link.target, process.platform === "win32" ? "junction" : "dir");
     }
     return true;
   } catch {
