@@ -113,6 +113,75 @@ describe("findBridgeObservation", () => {
     }
   });
 
+  it("persists the selected commit and reports the same value through admin info", async () => {
+    dirs.push(isolateStateDir());
+    const root = makeTmpDir("obs-active-commit");
+    dirs.push(root);
+    write(root, "a.txt", "a");
+    const auth = path.join(makeTmpDir("obs-active-commit-auth"), "store.json");
+    dirs.push(path.dirname(auth));
+    const selectedCommit = "a".repeat(40);
+    const previousCommit = process.env.C2C_ACTIVE_VERSION_COMMIT;
+    process.env.C2C_ACTIVE_VERSION_COMMIT = selectedCommit;
+    let bridge: Awaited<ReturnType<typeof startBridge>> | null = null;
+    try {
+      bridge = await startBridge({
+        workspaceRoot: root,
+        port: 0,
+        persistRuntime: true,
+        authStoreFile: auth,
+      });
+      const observation = await findBridgeObservation(bridge.workspace.id);
+      expect(observation.state).toBe("healthy");
+      if (observation.state === "healthy") expect(observation.runtime.activeCommit).toBe(selectedCommit);
+
+      const response = await fetch(`${bridge.localBaseUrl()}/admin/info`, {
+        headers: { authorization: `Bearer ${bridge.adminToken}` },
+      });
+      expect(response.ok).toBe(true);
+      const info = await response.json() as { activeCommit?: string };
+      expect(info.activeCommit).toBe(selectedCommit);
+    } finally {
+      if (bridge) await bridge.close();
+      if (previousCommit === undefined) delete process.env.C2C_ACTIVE_VERSION_COMMIT;
+      else process.env.C2C_ACTIVE_VERSION_COMMIT = previousCommit;
+    }
+  });
+
+  it("does not invent an active commit when the launcher did not provide one", async () => {
+    dirs.push(isolateStateDir());
+    const root = makeTmpDir("obs-no-active-commit");
+    dirs.push(root);
+    write(root, "a.txt", "a");
+    const auth = path.join(makeTmpDir("obs-no-active-commit-auth"), "store.json");
+    dirs.push(path.dirname(auth));
+    const previousCommit = process.env.C2C_ACTIVE_VERSION_COMMIT;
+    delete process.env.C2C_ACTIVE_VERSION_COMMIT;
+    let bridge: Awaited<ReturnType<typeof startBridge>> | null = null;
+    try {
+      bridge = await startBridge({
+        workspaceRoot: root,
+        port: 0,
+        persistRuntime: true,
+        authStoreFile: auth,
+      });
+      const observation = await findBridgeObservation(bridge.workspace.id);
+      expect(observation.state).toBe("healthy");
+      if (observation.state === "healthy") expect(observation.runtime.activeCommit).toBeUndefined();
+
+      const response = await fetch(`${bridge.localBaseUrl()}/admin/info`, {
+        headers: { authorization: `Bearer ${bridge.adminToken}` },
+      });
+      expect(response.ok).toBe(true);
+      const info = await response.json() as { activeCommit?: string };
+      expect(info.activeCommit).toBeUndefined();
+    } finally {
+      if (bridge) await bridge.close();
+      if (previousCommit === undefined) delete process.env.C2C_ACTIVE_VERSION_COMMIT;
+      else process.env.C2C_ACTIVE_VERSION_COMMIT = previousCommit;
+    }
+  });
+
   it("does not kill a PID when the health identity belongs to another workspace", async () => {
     dirs.push(isolateStateDir());
     const root = makeTmpDir("stop-mismatch");

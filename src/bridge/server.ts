@@ -235,6 +235,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       adminToken,
       publicUrl: publicBaseUrl,
       startedAt,
+      activeCommit: process.env.C2C_ACTIVE_VERSION_COMMIT,
     };
     writeRuntimeState(state);
   };
