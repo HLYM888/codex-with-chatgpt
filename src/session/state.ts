@@ -80,6 +80,11 @@ export interface ConversationView {
   reuseSavedChat: boolean;
 }
 
+export interface ConversationResolveOptions {
+  /** The caller has already established that this is the same Codex thread. */
+  sameThread?: boolean;
+}
+
 export function sessionFile(workspaceId: string): string {
   return path.join(getStateDir(), "sessions", `${workspaceId}.json`);
 }
@@ -111,7 +116,10 @@ export function projectIdFromUrl(url: string): string | null {
   return normalized.match(/\/g\/(g-p-[a-zA-Z0-9]+)\/project/)?.[1] ?? null;
 }
 
-export function resolveConversation(session: SavedSession | null): ConversationView {
+export function resolveConversation(
+  session: SavedSession | null,
+  options: ConversationResolveOptions = {}
+): ConversationView {
   if (!session) {
     return {
       mode: "project",
@@ -145,9 +153,12 @@ export function resolveConversation(session: SavedSession | null): ConversationV
       reason: "project",
       projectUrl,
       projectReady,
-      chatUrl: session.url ?? null,
+      // A project URL is workspace scoped, while a chat URL is Codex-thread
+      // scoped. Reusing the latter requires an explicit same-thread assertion;
+      // this prevents a new Codex conversation from inheriting an old chat.
+      chatUrl: options.sameThread ? session.url ?? null : null,
       connectorName: session.connectorName ?? null,
-      reuseSavedChat: false,
+      reuseSavedChat: Boolean(options.sameThread && session.url),
     };
   }
 

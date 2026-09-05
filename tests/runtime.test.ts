@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { startBridge } from "../src/bridge/server.js";
@@ -8,7 +8,7 @@ import {
   writeRuntimeState,
   type RuntimeState,
 } from "../src/bridge/runtime.js";
-import { ensureBridge } from "../src/process/daemon.js";
+import { ensureBridge, stopBridge } from "../src/process/daemon.js";
 import { SERVICE_NAME, VERSION } from "../src/version.js";
 import { Workspace } from "../src/workspace/manager.js";
 import { cleanup, isolateStateDir, makeTmpDir, write } from "./helpers.js";
@@ -111,5 +111,74 @@ describe("findBridgeObservation", () => {
     } finally {
       await bridge.close();
     }
+  });
+
+  it("does not kill a PID when the health identity belongs to another workspace", async () => {
+    dirs.push(isolateStateDir());
+    const root = makeTmpDir("stop-mismatch");
+    dirs.push(root);
+    write(root, "a.txt", "a");
+    const workspace = new Workspace(root);
+    writeRuntimeState(stubRuntime(workspace.id, workspace.root, 12345, 43123));
+    const kill = vi.fn();
+
+    const stopped = await stopBridge(root, {
+      probe: async () => ({
+        service: SERVICE_NAME,
+        version: VERSION,
+        workspaceId: "different-workspace",
+        status: "ok",
+      }),
+      kill,
+    });
+
+    expect(stopped).toBe(false);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("does not act on a runtime file whose recorded root is different", async () => {
+    dirs.push(isolateStateDir());
+    const root = makeTmpDir("stop-root-mismatch");
+    const otherRoot = makeTmpDir("stop-root-other");
+    dirs.push(root, otherRoot);
+    write(root, "a.txt", "a");
+    write(otherRoot, "a.txt", "a");
+    const workspace = new Workspace(root);
+    writeRuntimeState(stubRuntime(workspace.id, otherRoot, 12345, 43123));
+    const observation = await findBridgeObservation(workspace.id, workspace.root);
+    const probe = vi.fn();
+    const kill = vi.fn();
+
+    const stopped = await stopBridge(root, { probe, kill });
+
+    expect(stopped).toBe(false);
+    expect(observation).toMatchObject({ state: "unknown", reason: "workspace_mismatch" });
+    expect(probe).not.toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("rechecks identity before a fallback kill when the PID may have been reused", async () => {
+    dirs.push(isolateStateDir());
+    const root = makeTmpDir("stop-pid-reuse");
+    dirs.push(root);
+    write(root, "a.txt", "a");
+    const workspace = new Workspace(root);
+    writeRuntimeState(stubRuntime(workspace.id, workspace.root, 12345, 43123));
+    const identity = (workspaceId: string) => ({
+      service: SERVICE_NAME,
+      version: VERSION,
+      workspaceId,
+      status: "ok",
+    });
+    const probe = vi.fn()
+      .mockResolvedValueOnce(identity(workspace.id))
+      .mockResolvedValueOnce(identity("different-workspace"));
+    const kill = vi.fn();
+
+    const stopped = await stopBridge(root, { probe, kill });
+
+    expect(stopped).toBe(false);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(kill).not.toHaveBeenCalled();
   });
 });

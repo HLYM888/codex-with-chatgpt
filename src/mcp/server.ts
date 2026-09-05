@@ -299,6 +299,8 @@ export function createMcpServer(ctx: McpContext): McpServer {
           readable: item.allowed,
           status: item.allowed ? "readable" : "restricted",
           truncated: item.truncated,
+          sourceTruncated: item.sourceTruncated,
+          sourceEncoding: item.sourceEncoding,
           sizeBytes: item.sizeBytes,
         }));
         return ok({ items });
@@ -317,6 +319,8 @@ export function createMcpServer(ctx: McpContext): McpServer {
         exitCode: result.meta.exitCode,
         timestamp: result.meta.timestamp,
         truncated: result.meta.truncated,
+        sourceTruncated: result.meta.sourceTruncated,
+        sourceEncoding: result.meta.sourceEncoding,
         text: result.text,
       });
     }

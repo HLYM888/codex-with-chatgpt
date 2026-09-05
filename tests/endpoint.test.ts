@@ -57,7 +57,23 @@ describe("connectorNameFor", () => {
         workspaceId: "def456def456",
         hadEndpointBefore: false,
       })
-    ).toBe("Codex with ChatGPT · Landing");
+    ).toBe("Codex with ChatGPT · Landing · def456def456");
+  });
+
+  it("keeps same-name new workspaces on distinct connector titles", () => {
+    const first = connectorNameFor({
+      workspaceName: "Demo",
+      workspaceId: "111111111111",
+      hadEndpointBefore: false,
+    });
+    const second = connectorNameFor({
+      workspaceName: "Demo",
+      workspaceId: "222222222222",
+      hadEndpointBefore: false,
+    });
+    expect(first).not.toBe(second);
+    expect(first).toContain("11111111");
+    expect(second).toContain("22222222");
   });
 });
 

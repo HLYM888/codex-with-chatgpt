@@ -16,6 +16,9 @@ export interface ExecutionOutputMeta {
   allowed: boolean;
   restrictedReason?: string;
   truncated: boolean;
+  /** The local command file exceeded the read budget; the body is bounded. */
+  sourceTruncated: boolean;
+  sourceEncoding: "utf8" | "gb18030";
   sizeBytes: number;
 }
 
@@ -37,12 +40,16 @@ function bodyFile(workspaceId: string, id: number): string {
 }
 
 function readIndex(workspaceId: string): OutputIndex {
-  return (
-    readJsonIfExists<OutputIndex>(indexFile(workspaceId)) ?? {
-      nextId: 1,
-      items: [],
-    }
-  );
+  const saved = readJsonIfExists<OutputIndex>(indexFile(workspaceId));
+  if (!saved) return { nextId: 1, items: [] };
+  return {
+    nextId: saved.nextId,
+    items: saved.items.map((item) => ({
+      ...item,
+      sourceTruncated: Boolean(item.sourceTruncated),
+      sourceEncoding: item.sourceEncoding ?? "utf8",
+    })),
+  };
 }
 
 function writeIndex(workspaceId: string, index: OutputIndex): void {
@@ -55,16 +62,22 @@ export interface SaveOutputInput {
   exitCode?: number | null;
   taskId?: string;
   iteration?: number;
+  sourceTruncated?: boolean;
+  sourceEncoding?: "utf8" | "gb18030";
 }
 
 export function saveExecutionOutput(workspaceId: string, input: SaveOutputInput): ExecutionOutputMeta {
-  const sanitized = sanitizeExecutionOutput(input.raw);
+  const raw = input.sourceTruncated
+    ? `${input.raw}\n…[源文件已达到读取上限，正文仅含安全前缀]`
+    : input.raw;
+  const sanitized = sanitizeExecutionOutput(raw);
   const index = readIndex(workspaceId);
   const id = index.nextId;
   const timestamp = new Date().toISOString();
   const allowed = sanitized.allowed;
   const text = allowed ? sanitized.text : "";
-  const truncated = allowed ? sanitized.truncated : false;
+  const sourceTruncated = Boolean(input.sourceTruncated);
+  const truncated = allowed ? sanitized.truncated || sourceTruncated : false;
   const meta: ExecutionOutputMeta = {
     id,
     command: redact(input.command).slice(0, 200),
@@ -75,6 +88,8 @@ export function saveExecutionOutput(workspaceId: string, input: SaveOutputInput)
     allowed,
     restrictedReason: allowed ? undefined : sanitized.reason,
     truncated,
+    sourceTruncated,
+    sourceEncoding: input.sourceEncoding ?? "utf8",
     sizeBytes: Buffer.byteLength(text, "utf8"),
   };
   if (allowed && text) {

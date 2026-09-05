@@ -56,6 +56,7 @@ import {
 } from "../session/state.js";
 import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
+import { readCappedUtf8 } from "../execution/input.js";
 import { defaultInstalledSkillPath, performSafeUpdate, rollbackActiveVersion } from "../update/safe-update.js";
 
 const program = new Command();
@@ -70,19 +71,19 @@ function resolveWorkspace(option?: string): string {
   return path.resolve(option ?? process.cwd());
 }
 
-/** Local harness output only. Never pasted into ChatGPT. */
-const MAX_RECORD_OUTPUT_READ = 256 * 1024;
-
-function readCappedUtf8(filePath: string, maxBytes: number): string {
-  const fd = fs.openSync(filePath, "r");
+function readActiveVersionCommit(): string | null {
   try {
-    const buf = Buffer.alloc(maxBytes);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    return buf.subarray(0, n).toString("utf8");
-  } finally {
-    fs.closeSync(fd);
+    const active = JSON.parse(fs.readFileSync(path.join(getStateDir(), "active-version.json"), "utf8")) as {
+      commit?: unknown;
+    };
+    return typeof active.commit === "string" && active.commit.trim() ? active.commit.trim() : null;
+  } catch {
+    return null;
   }
 }
+
+/** Local harness output only. Never pasted into ChatGPT. */
+const MAX_RECORD_OUTPUT_READ = 256 * 1024;
 
 function persistWorkspaceEndpoint(opts: {
   workspaceId: string;
@@ -160,6 +161,7 @@ interface AdminInfo {
   pairingActive: boolean;
   pid: number;
   startedAt: string;
+  activeCommit?: string;
 }
 
 async function ensureBridgeAndTunnel(
@@ -355,7 +357,7 @@ program
   .action(async (opts: { workspace?: string; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
     const workspace = new Workspace(root);
-    const observation = await findBridgeObservation(workspace.id);
+    const observation = await findBridgeObservation(workspace.id, workspace.root);
     if (observation.state === "unknown") {
       if (opts.json) {
         say(JSON.stringify({ ok: false, running: null, state: "unknown", reason: observation.reason }));
@@ -434,7 +436,7 @@ program
     let runtime: RuntimeState | null = null;
     let bridgeUnknown = false;
     if (workspace) {
-      const observation = await findBridgeObservation(workspace.id);
+      const observation = await findBridgeObservation(workspace.id, workspace.root);
       if (observation.state === "healthy") {
         runtime = observation.runtime;
       } else if (observation.state === "unknown") {
@@ -450,6 +452,20 @@ program
       }
       if (runtime) report.bridge = { ok: true, detail: `端口 ${runtime.port}` };
       else report.bridge = report.bridge ?? { ok: false, detail: "未运行" };
+      if (runtime) {
+        const activeCommit = readActiveVersionCommit();
+        const runningCommit = runtime.activeCommit ?? null;
+        if (activeCommit && runningCommit !== activeCommit) {
+          report.activation = {
+            ok: false,
+            detail: `运行 Bridge 版本 ${runningCommit ?? "未知"} 与活动版本 ${activeCommit} 不一致；请仅在确认当前工作区身份后执行 c2c restart -w <workspace>。`,
+          };
+          report.bridge = {
+            ok: false,
+            detail: `版本不一致（运行 ${runningCommit ?? "未知"}，活动 ${activeCommit}），未自动重启。`,
+          };
+        }
+      }
     }
 
     // MCP local reachability (401 without token means MCP + auth both work)
@@ -858,21 +874,30 @@ program
   .command("update")
   .description("Safely update in an isolated candidate and switch only after validation")
   .option("--json", "machine-readable output", false)
-  .option("--skip-validation", "internal tests only; never used by the Skill", false)
-  .action((opts: { json: boolean; skipValidation: boolean }) => {
+  .action((opts: { json: boolean }) => {
     const result = performSafeUpdate({
       repoRoot,
       stateDir: getStateDir(),
       installedSkillPath: defaultInstalledSkillPath(),
-      validate: !opts.skipValidation,
+      validate: true,
       allowDirtyCandidate: true,
     });
+    const activation =
+      result.status === "updated"
+        ? {
+            required: true,
+            detail: "活动版本已切换；现有 Bridge 仍运行旧版本，请确认工作区身份后执行 c2c restart -w <workspace>。",
+          }
+        : { required: false };
     if (opts.json) {
-      say(JSON.stringify({ version: VERSION, ...result }));
+      say(JSON.stringify({ version: VERSION, ...result, activation }));
       if (!result.ok) process.exitCode = 1;
       return;
     }
-    if (result.status === "updated") check(`已在隔离候选中完成验证并切换到 ${result.activeVersion?.slice(0, 8)}`);
+    if (result.status === "updated") {
+      check(`已在隔离候选中完成验证并切换到 ${result.activeVersion?.slice(0, 8)}`);
+      say("现有 Bridge 尚未切换；确认工作区身份后执行 c2c restart -w <workspace> 使其生效。");
+    }
     else if (result.status === "up_to_date") say("已是最新版本。");
     else if (result.status === "deferred_dirty") say("检测到本地改动，已保留当前版本并跳过更新。");
     else cross(result.reason ?? "更新未切换，当前版本继续运行。");
@@ -905,11 +930,12 @@ session
   .command("get", { isDefault: true })
   .description("Show the saved ChatGPT conversation / Project for this workspace")
   .option("-w, --workspace <path>")
+  .option("--same-thread", "reuse the saved project chat only after this Codex thread is confirmed", false)
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; json: boolean }) => {
+  .action((opts: { workspace?: string; sameThread: boolean; json: boolean }) => {
     const workspace = new Workspace(resolveWorkspace(opts.workspace));
     const saved = readSession(workspace.id);
-    const conversation = resolveConversation(saved);
+    const conversation = resolveConversation(saved, { sameThread: opts.sameThread });
     if (opts.json) say(JSON.stringify({ ok: true, session: saved, conversation }));
     else if (!saved) {
       say("尚未记录 ChatGPT 会话。新仓库默认使用 Project 合集。");
@@ -1114,11 +1140,15 @@ program
       const rawOutput =
         opts.outputFile !== undefined
           ? readCappedUtf8(path.resolve(opts.outputFile), MAX_RECORD_OUTPUT_READ)
-          : opts.output;
+          : opts.output === undefined
+            ? undefined
+            : { text: opts.output, sourceTruncated: false, encoding: "utf8" as const };
       if (opts.command && rawOutput !== undefined) {
         const savedOutput = saveExecutionOutput(workspace.id, {
           command: opts.command,
-          raw: rawOutput,
+          raw: rawOutput.text,
+          sourceTruncated: rawOutput.sourceTruncated,
+          sourceEncoding: rawOutput.encoding,
           exitCode: opts.exitCode !== undefined ? parseInt(opts.exitCode, 10) : null,
           taskId: opts.task,
           iteration: parseInt(opts.iteration, 10),

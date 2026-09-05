@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { sanitizeExecutionOutput, MAX_OUTPUT_LINES } from "../src/execution/sanitize.js";
 import { listExecutionOutputs, readExecutionOutput, saveExecutionOutput } from "../src/execution/output.js";
-import { cleanup, isolateStateDir } from "./helpers.js";
+import { readCappedUtf8 } from "../src/execution/input.js";
+import { cleanup, isolateStateDir, makeTmpDir } from "./helpers.js";
 
 describe("sanitizeExecutionOutput", () => {
   it("redacts bearer tokens and pairing-code shaped strings", () => {
@@ -91,5 +94,57 @@ describe("execution output store", () => {
     });
     expect(item.command).not.toMatch(/c2c_at_/);
     expect(item.command).toContain("[REDACTED]");
+  });
+
+  it("marks a bounded source file instead of silently hiding the truncation", () => {
+    dirs.push(isolateStateDir());
+    const item = saveExecutionOutput("ws1", {
+      command: "long command",
+      raw: "保留的前缀",
+      sourceTruncated: true,
+      exitCode: 0,
+    });
+    expect(item.truncated).toBe(true);
+    expect(item.sourceTruncated).toBe(true);
+    const read = readExecutionOutput("ws1", item.id);
+    expect(read.ok).toBe(true);
+    if (read.ok) expect(read.text).toContain("源文件已达到读取上限");
+  });
+});
+
+describe("readCappedUtf8", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) cleanup(dir);
+    delete process.env.C2C_STATE_DIR;
+  });
+
+  it("keeps a complete UTF-8 boundary when the byte cap splits a character", () => {
+    const dir = makeTmpDir("output-utf8-boundary");
+    dirs.push(dir);
+    const file = path.join(dir, "out.log");
+    fs.writeFileSync(file, "a你\n", "utf8");
+    expect(readCappedUtf8(file, 3)).toEqual({ text: "a", sourceTruncated: true, encoding: "utf8" });
+  });
+
+  it("decodes Chinese command output from the Windows GB18030/CP936 stream", () => {
+    const dir = makeTmpDir("output-gb18030");
+    dirs.push(dir);
+    const file = path.join(dir, "out.log");
+    fs.writeFileSync(file, Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x0a]));
+    const output = readCappedUtf8(file, 1024);
+    expect(output.text).toBe("中文\n");
+    expect(output.encoding).toBe("gb18030");
+    expect(output.sourceTruncated).toBe(false);
+
+    dirs.push(isolateStateDir());
+    const item = saveExecutionOutput("ws1", {
+      command: "命令",
+      raw: output.text,
+      sourceEncoding: output.encoding,
+      exitCode: 0,
+    });
+    expect(item.sourceEncoding).toBe("gb18030");
   });
 });

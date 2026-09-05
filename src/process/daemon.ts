@@ -3,7 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDir, getStateDir } from "../config/paths.js";
-import { findBridgeObservation, findLiveBridge, probeBridge, readRuntimeState, type RuntimeState } from "../bridge/runtime.js";
+import {
+  findBridgeObservation,
+  findLiveBridge,
+  probeBridge,
+  readRuntimeState,
+  type HealthPayload,
+  type RuntimeState,
+} from "../bridge/runtime.js";
 import { Workspace } from "../workspace/manager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,7 +42,7 @@ export interface EnsureBridgeResult {
  */
 export async function ensureBridge(workspaceRoot: string, opts: { port?: number } = {}): Promise<EnsureBridgeResult> {
   const workspace = new Workspace(workspaceRoot);
-  const observation = await findBridgeObservation(workspace.id);
+  const observation = await findBridgeObservation(workspace.id, workspace.root);
   if (observation.state === "healthy") return { runtime: observation.runtime, spawned: false };
   if (observation.state === "unknown") {
     throw new Error(
@@ -103,21 +110,59 @@ export async function adminFetch<T = unknown>(
   }
 }
 
-export async function stopBridge(workspaceRoot: string): Promise<boolean> {
+export interface StopBridgeDependencies {
+  probe?: (port: number) => Promise<HealthPayload | null>;
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+}
+
+export async function stopBridge(
+  workspaceRoot: string,
+  dependencies: StopBridgeDependencies = {}
+): Promise<boolean> {
   const workspace = new Workspace(workspaceRoot);
   const runtime = readRuntimeState(workspace.id);
   if (!runtime) return false;
-  const healthy = await probeBridge(runtime.port);
-  if (healthy && healthy.workspaceId === workspace.id) {
+  if (typeof runtime.workspaceRoot !== "string" || !runtime.workspaceRoot.trim()) return false;
+  const recordedRoot = path.resolve(runtime.workspaceRoot);
+  const requestedRoot = path.resolve(workspace.root);
+  const rootsMatch = process.platform === "win32"
+    ? recordedRoot.toLowerCase() === requestedRoot.toLowerCase()
+    : recordedRoot === requestedRoot;
+  if (!rootsMatch) return false;
+  const probe = dependencies.probe ?? probeBridge;
+  const kill = dependencies.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal));
+  const healthy = await probe(runtime.port);
+
+  // A port may have been reused by another workspace, or the recorded PID may
+  // now belong to an unrelated process. Never kill without a positive bridge
+  // identity match. This is also the safe behavior when probing is uncertain.
+  if (!healthy || healthy.workspaceId !== workspace.id) return false;
+
+  try {
+    await adminFetch(runtime, "POST", "/admin/shutdown", 5000);
+    return true;
+  } catch {
+    // Re-probe immediately before the fallback kill. A shutdown timeout must
+    // not turn a reused PID into a kill target.
+    const confirmed = await probe(runtime.port);
+    if (!confirmed || confirmed.workspaceId !== workspace.id) return false;
     try {
-      await adminFetch(runtime, "POST", "/admin/shutdown", 5000);
-      return true;
+      const info = await adminFetch<{
+        workspaceId?: string;
+        workspaceRoot?: string;
+        pid?: number;
+      }>(runtime, "GET", "/admin/info", 2000);
+      const confirmedRoot = typeof info.workspaceRoot === "string" ? path.resolve(info.workspaceRoot) : "";
+      const sameRoot = process.platform === "win32"
+        ? confirmedRoot.toLowerCase() === requestedRoot.toLowerCase()
+        : confirmedRoot === requestedRoot;
+      if (info.workspaceId !== workspace.id || info.pid !== runtime.pid || !sameRoot) return false;
     } catch {
-      // fall through to kill
+      return false;
     }
   }
   try {
-    process.kill(runtime.pid, "SIGTERM");
+    kill(runtime.pid, "SIGTERM");
     return true;
   } catch {
     return false;

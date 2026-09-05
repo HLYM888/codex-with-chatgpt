@@ -111,7 +111,12 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   // ---- Health (public but minimal) ---------------------------------------
 
   app.get("/health", (_req, res) => {
-    res.json({ service: SERVICE_NAME, version: VERSION, workspaceId: workspace.id, status: "ok" });
+    res.json({
+      service: SERVICE_NAME,
+      version: VERSION,
+      workspaceId: workspace.id,
+      status: "ok",
+    });
   });
 
   // ---- OAuth + discovery ---------------------------------------------------
@@ -174,6 +179,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       pairingActive: pairing.hasActiveSession(),
       pid: process.pid,
       startedAt,
+      activeCommit: process.env.C2C_ACTIVE_VERSION_COMMIT,
     });
   });
 

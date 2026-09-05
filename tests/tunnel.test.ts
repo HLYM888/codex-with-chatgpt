@@ -137,14 +137,37 @@ describe("CloudflaredQuickTunnel", () => {
     const { child, tunnel } = setupTunnel(
       async () =>
         new Response(JSON.stringify({ service: "cloudflare", status: "ok" }), { status: 200 }),
-      20
+      4_000
     );
     const starting = tunnel.start(3333);
     announceUrl(child);
 
-    await expect(starting).rejects.toThrow(/timed out/i);
+    await expect(starting).rejects.toThrow(/health endpoint unreachable/i);
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     expect(tunnel.status()).toMatchObject({ running: false, url: null });
+  });
+
+  it("bounds repeated 429 responses and reports the address as unreachable", async () => {
+    let calls = 0;
+    const child = new FakeCloudflaredProcess();
+    const fetchImpl = async () => {
+      calls += 1;
+      return new Response("busy", { status: 429, headers: { "retry-after": "1" } });
+    };
+    // The provider's fetch dependency is private by design; use the public
+    // constructor injection through a fresh instance for this bounded case.
+    const bounded = new CloudflaredQuickTunnel(undefined, "cloudflared", {
+      spawnImpl: vi.fn(() => child as unknown as ChildProcess),
+      fetchImpl,
+      startTimeoutMs: 3_000,
+      maxConsecutiveHealthErrors: 2,
+    });
+    const starting = bounded.start(3333);
+    announceUrl(child);
+
+    await expect(starting).rejects.toThrow(/health endpoint unreachable/i);
+    expect(calls).toBe(2);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
   it("does not spawn twice or resolve a stopped pending start", async () => {

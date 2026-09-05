@@ -60,7 +60,10 @@ whatever data it needs by itself.
      with an explicit "我愿意承担影响" may you proceed in their browser; otherwise
      keep ChatGPT in the built-in browser, every time they ask.
 6. Conversation reuse depends on `c2c session --json` → `conversation.mode`
-   (see Conversation management). Do not invent a second mode.
+   (see Conversation management). Do not invent a second mode. In Project
+   mode, use `c2c session --same-thread --json` only after this Codex
+   conversation has already established the saved ChatGPT chat URL; the
+   default command intentionally hides a chat URL from a new Codex thread.
    - **long-chat** (legacy session file, or the user opted out): ONE ChatGPT
      conversation per workspace. Never silently start a new chat.
    - **project** (new workspaces, or an existing workspace that opted in):
@@ -233,12 +236,14 @@ Inside the checkout directory (see Locations):
 4. **原子切换**：候选全部通过后，先备份当前生效的 Skill 和版本路径；若已安装
    Skill 与仓库模板存在本地定制差异，也必须在候选中做三方合并，冲突时保留当前
    Skill，不得静默覆盖。只有合并无冲突且校验通过，才把 Codex with ChatGPT 的
-   checkout 路径切换到候选目录并重新安装候选 Skill。切换只影响后续调用；正在运行
-   的连接完成一次受控重启后再使用候选。原 checkout、旧 Skill 和旧候选目录都保留，
-   作为回滚版本。
+   checkout 路径切换到候选目录并重新安装候选 Skill。`c2c update --json`
+   会明确返回需要激活；只有确认 Bridge 的 workspace 身份和当前工作区完全
+   匹配时，才对该工作区执行一次 `c2c restart -w <workspace>`。状态未知、
+   workspace 不匹配或无法确认活动版本时，不自动重启。原 checkout、旧 Skill
+   和旧候选目录都保留，作为回滚版本。
 5. **回滚门槛**：切换后运行 `c2c doctor -w <workspace> --json` 及一次
    工作区读取/搜索/Git 检查。任一失败立即执行 `c2c rollback --json`，再只重启
-   一次现有连接并复核；`rollback` 只交换已验证的 `active-version.json` 与
+   一次已确认工作区的现有连接并复核；`rollback` 只交换已验证的 `active-version.json` 与
    `previous-version.json`，不会删除候选或触碰用户项目目录。没有完整旧版本时
    必须保持当前版本并报告阻断；禁止循环重启。
 6. 通过上述验证后执行 `c2c sandbox-allow --json`，再运行
@@ -457,8 +462,9 @@ ONE ChatGPT conversation per workspace. Same as before.
 
 One ChatGPT Project per workspace. Mapping:
 
-1. Same Codex conversation (this thread still has context) → same ChatGPT
-   chat URL. `goto` that URL directly. Do not open the collection first.
+1. Same Codex conversation (this thread still has context) → run
+   `c2c session --same-thread --json`, then use its ChatGPT chat URL and
+   `goto` that URL directly. Do not open the collection first.
 2. Same workspace, a **new** Codex conversation → new ChatGPT chat from the
    collection page (`conversation.projectUrl`). Ignore `session.url` unless
    you already saved it earlier in THIS Codex thread.

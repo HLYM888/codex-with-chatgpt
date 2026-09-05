@@ -18,6 +18,8 @@ export interface RuntimeState {
   adminToken: string;
   publicUrl: string | null;
   startedAt: string;
+  /** Commit selected by the stable launcher, when running through it. */
+  activeCommit?: string;
 }
 
 export function runtimeFile(workspaceId: string): string {
@@ -81,13 +83,29 @@ function observePid(pid: number): "present" | "missing" | "unknown" {
   }
 }
 
+function sameWorkspaceRoot(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 /**
  * Distinguish a dead bridge from a probe that simply failed.
  * Read-only: never starts, stops, or clears runtime.
  */
-export async function findBridgeObservation(workspaceId: string): Promise<BridgeObservation> {
+export async function findBridgeObservation(
+  workspaceId: string,
+  expectedWorkspaceRoot?: string
+): Promise<BridgeObservation> {
   const runtime = readRuntimeState(workspaceId);
   if (!runtime) return { state: "stopped", runtime: null, reason: "runtime_missing" };
+  if (
+    expectedWorkspaceRoot !== undefined &&
+    (typeof runtime.workspaceRoot !== "string" || !runtime.workspaceRoot.trim() ||
+      !sameWorkspaceRoot(runtime.workspaceRoot, expectedWorkspaceRoot))
+  ) {
+    return { state: "unknown", runtime, reason: "workspace_mismatch" };
+  }
 
   const health = await probeBridge(runtime.port);
   if (health && health.workspaceId === workspaceId) {

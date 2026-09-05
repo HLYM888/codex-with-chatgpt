@@ -72,7 +72,12 @@ export function connectorNameFor(opts: {
 }): string {
   if (opts.previousName?.trim()) return opts.previousName.trim();
   if (opts.hadEndpointBefore) return DEFAULT_CONNECTOR_NAME;
-  return `${DEFAULT_CONNECTOR_NAME} · ${sanitizeConnectorLabel(opts.workspaceName, opts.workspaceId)}`;
+  const label = sanitizeConnectorLabel(opts.workspaceName, opts.workspaceId);
+  // Workspace names are display labels and are not unique. Include a stable
+  // short identity suffix for first-time workspaces so two equal names cannot
+  // point the Skill at the same ChatGPT connector. Existing names above are
+  // deliberately preserved for backwards compatibility.
+  return `${DEFAULT_CONNECTOR_NAME} · ${label} · ${opts.workspaceId}`;
 }
 
 export function reclaimUserMessage(connectorName: string): string {

@@ -9,6 +9,7 @@ import type { TunnelDoctorReport, TunnelProvider, TunnelStatus } from "./provide
 const QUICK_TUNNEL_URL_RE = /https:\/\/[^\s|]+/gi;
 const QUICK_TUNNEL_HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.trycloudflare\.com$/i;
 const HEALTH_CHECK_INTERVAL_MS = 250;
+const HEALTH_CHECK_MAX_INTERVAL_MS = 5_000;
 const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 
 function isBridgeHealth(payload: unknown): boolean {
@@ -20,7 +21,7 @@ function isBridgeHealth(payload: unknown): boolean {
 async function bridgeHealth(
   fetchImpl: NonNullable<CloudflaredQuickTunnelOptions["fetchImpl"]>,
   publicUrl: string
-): Promise<{ ready: boolean; detail: string }> {
+): Promise<{ ready: boolean; detail: string; retryAfterMs?: number }> {
   const response = await fetchImpl(new URL("/health", publicUrl).toString(), {
     redirect: "error",
     signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
@@ -28,7 +29,16 @@ async function bridgeHealth(
   if (!response) return { ready: false, detail: "Health check did not run" };
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
-    return { ready: false, detail: `Health check returned HTTP ${response.status}` };
+    const retryAfter = response.headers?.get("retry-after");
+    const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
+    return {
+      ready: false,
+      detail: `Health check returned HTTP ${response.status}`,
+      retryAfterMs:
+        Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+          ? Math.min(HEALTH_CHECK_MAX_INTERVAL_MS, retryAfterSeconds * 1_000)
+          : undefined,
+    };
   }
   return {
     ready: isBridgeHealth(await response.json().catch(() => null)),
@@ -94,7 +104,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
     this.maxStartAttempts = Math.max(1, options.maxStartAttempts ?? 1);
     this.maxConsecutiveHealthErrors = Math.max(
       1,
-      options.maxConsecutiveHealthErrors ?? Number.POSITIVE_INFINITY
+      options.maxConsecutiveHealthErrors ?? 4
     );
     this.startRetryDelayMs = Math.max(0, options.startRetryDelayMs ?? 250);
     this.protocol = options.protocol;
@@ -169,6 +179,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
       let settled = false;
       let candidateUrl: string | null = null;
       let consecutiveHealthErrors = 0;
+      let healthCheckDelayMs = HEALTH_CHECK_INTERVAL_MS;
       let cancel: (() => void) | null = null;
       let timeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -235,15 +246,23 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
             return;
           }
 
+          let delayMs = healthCheckDelayMs;
           try {
             const result = await bridgeHealth(this.fetchImpl, publicUrl);
             if (settled) return;
-            consecutiveHealthErrors = 0;
+            delayMs = result.retryAfterMs ?? healthCheckDelayMs;
             if (result.ready) {
+              consecutiveHealthErrors = 0;
+              healthCheckDelayMs = HEALTH_CHECK_INTERVAL_MS;
               ready(publicUrl);
               return;
             }
             this.lastError = result.detail;
+            consecutiveHealthErrors += 1;
+            if (consecutiveHealthErrors >= this.maxConsecutiveHealthErrors) {
+              fail(new Error("Quick tunnel public health endpoint unreachable"));
+              return;
+            }
           } catch (error) {
             if (settled) return;
             this.lastError = error instanceof Error ? error.message : String(error);
@@ -254,7 +273,10 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
             }
           }
           if (settled) return;
-          await new Promise((resolveWait) => setTimeout(resolveWait, HEALTH_CHECK_INTERVAL_MS));
+          await new Promise((resolveWait) =>
+            setTimeout(resolveWait, delayMs)
+          );
+          healthCheckDelayMs = Math.min(HEALTH_CHECK_MAX_INTERVAL_MS, healthCheckDelayMs * 2);
         }
       };
 

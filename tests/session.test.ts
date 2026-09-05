@@ -70,7 +70,22 @@ describe("resolveConversation", () => {
     expect(view.mode).toBe("project");
     expect(view.projectReady).toBe(true);
     expect(view.reuseSavedChat).toBe(false);
+    expect(view.chatUrl).toBeNull();
     expect(view.connectorName).toBe("Codex with ChatGPT · Demo");
+  });
+
+  it("exposes the saved project chat only for an explicitly bound Codex thread", () => {
+    const view = resolveConversation(
+      {
+        conversationMode: "project",
+        projectUrl: PROJECT,
+        url: "https://chatgpt.com/c/thread-1",
+        savedAt: "2026-01-01T00:00:00.000Z",
+      },
+      { sameThread: true }
+    );
+    expect(view.reuseSavedChat).toBe(true);
+    expect(view.chatUrl).toBe("https://chatgpt.com/c/thread-1");
   });
 });
 

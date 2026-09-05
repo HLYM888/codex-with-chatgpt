@@ -1,17 +1,24 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { classifyUpdate, isSafeUntrackedPath, performSafeUpdate, rollbackActiveVersion, shouldKeepOldVersion } from "../src/update/safe-update.js";
 import { cleanup, makeTmpDir } from "./helpers.js";
 
 const tempDirs: string[] = [];
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) cleanup(dir);
 });
 
 describe("safe update policy", () => {
+  it("does not expose a public validation bypass", () => {
+    const cli = fs.readFileSync(path.join(projectRoot, "src/cli/index.ts"), "utf8");
+    expect(cli).not.toContain("--skip-validation");
+  });
+
   it("classifies clean, dirty, and current versions", () => {
     expect(classifyUpdate({ localCommit: "a", remoteCommit: "a", dirty: false })).toBe("up_to_date");
     expect(classifyUpdate({ localCommit: "a", remoteCommit: "b", dirty: true })).toBe("deferred_dirty");
