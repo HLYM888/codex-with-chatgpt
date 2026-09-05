@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { classifyUpdate, isCompleteCandidateVersion, isSafeUntrackedPath, performSafeUpdate, rollbackActiveVersion, shouldKeepOldVersion } from "../src/update/safe-update.js";
-import { cleanup, makeTmpDir } from "./helpers.js";
+import { cleanup } from "./helpers.js";
 
 const tempDirs: string[] = [];
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,6 +15,11 @@ const OLD_COMMIT = "3".repeat(40);
 const NEW_COMMIT = "4".repeat(40);
 const LINKED_COMMIT = "5".repeat(40);
 const PNPM_COMMIT = "6".repeat(40);
+
+function makeTmpDir(name: string): string {
+  const safeName = name.replaceAll(/[^A-Za-z0-9_-]/g, "_");
+  return fs.mkdtempSync(path.join(os.tmpdir(), `c2c-safe-update-${safeName}-`));
+}
 
 function prepareSourceCheckout(root: string): void {
   fs.mkdirSync(path.join(root, "dist", "cli"), { recursive: true });
@@ -64,10 +69,15 @@ describe("safe update policy", () => {
 
   function fakeRunner(options: { applyStatus?: number; validationStatus?: number; validationStdout?: string; validationStderr?: string } = {}) {
     const calls: string[] = [];
+    const candidateRoots = new Set<string>();
     const run = (file: string, args: string[], cwd: string) => {
       calls.push(`${file} ${args.join(" ")}`);
       if (file === "git" && args[0] === "rev-parse") {
-        return { status: 0, stdout: `${cwd.includes("candidates") ? REMOTE_COMMIT : LOCAL_COMMIT}\n`, stderr: "" };
+        const resolvedCwd = path.resolve(cwd);
+        const isCandidate = [...candidateRoots].some(
+          (candidateRoot) => resolvedCwd === candidateRoot || resolvedCwd.startsWith(`${candidateRoot}${path.sep}`),
+        );
+        return { status: 0, stdout: `${isCandidate ? REMOTE_COMMIT : LOCAL_COMMIT}\n`, stderr: "" };
       }
       if (file === "git" && args[0] === "ls-remote") return { status: 0, stdout: `${REMOTE_COMMIT}\tHEAD\n`, stderr: "" };
       if (file === "git" && args[0] === "status") return { status: 0, stdout: " M src/index.ts\n?? .env\n", stderr: "" };
@@ -75,6 +85,7 @@ describe("safe update policy", () => {
       if (file === "git" && args[0] === "config") return { status: 0, stdout: "https://example.invalid/c2c.git\n", stderr: "" };
       if (file === "git" && args[0] === "clone") {
         const candidate = args.at(-1)!;
+        candidateRoots.add(path.resolve(candidate));
         fs.mkdirSync(path.join(candidate, "dist", "cli"), { recursive: true });
         fs.writeFileSync(path.join(candidate, "dist", "cli", "index.js"), "candidate");
         fs.writeFileSync(path.join(candidate, "package.json"), JSON.stringify({ name: "fixture", version: "0.0.0" }));
@@ -96,6 +107,17 @@ describe("safe update policy", () => {
     };
     return { run, calls };
   }
+
+  it("keeps a source fixture distinct when its path contains a candidates segment", () => {
+    const outer = makeTmpDir("safe-update-candidates-parent");
+    const root = path.join(outer, "candidates", "source");
+    const state = makeTmpDir("safe-update-candidates-parent-state");
+    tempDirs.push(outer, state);
+    fs.mkdirSync(root, { recursive: true });
+    prepareSourceCheckout(root);
+    const result = performSafeUpdate({ repoRoot: root, stateDir: state, run: fakeRunner().run, validate: false, allowDirtyCandidate: true });
+    expect(result).toMatchObject({ ok: true, status: "updated", remoteCommit: REMOTE_COMMIT });
+  });
 
   it("keeps the active version when the three-way patch conflicts", () => {
     const root = makeTmpDir("safe-update-conflict");

@@ -1,13 +1,19 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, makeTmpDir } from "./helpers.js";
+import { cleanup } from "./helpers.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const launcher = path.join(projectRoot, "bin", "c2c.js");
 const tempDirs: string[] = [];
+
+function makeTmpDir(name: string): string {
+  const safeName = name.replaceAll(/[^A-Za-z0-9_-]/g, "_");
+  return fs.mkdtempSync(path.join(os.tmpdir(), `c2c-launcher-${safeName}-`));
+}
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) cleanup(dir);
