@@ -132,6 +132,7 @@ describe("mergeSession", () => {
     expect(withCheckpoint.checkpoint?.protocolState).toBe("EXECUTED_SENT");
     expect(withCheckpoint.checkpoint?.waitingFor).toBe("GPT_REVIEW");
     expect(withCheckpoint.checkpoint?.taskId).toBe("c2c_ab12");
+    expect(withCheckpoint.checkpoint?.chatUrl).toBe("https://chatgpt.com/c/keep");
     const cleared = mergeSession(withCheckpoint, { clearCheckpoint: true });
     expect(cleared.checkpoint).toBeUndefined();
     expect(cleared.url).toBe("https://chatgpt.com/c/keep");
@@ -156,7 +157,56 @@ describe("mergeSession", () => {
     const next = mergeSession(previous, { url: "https://chatgpt.com/c/new" });
     expect(next.url).toBe("https://chatgpt.com/c/new");
     expect(next.checkpoint?.protocolState).toBe("EXECUTED_SENT");
+    expect(next.checkpoint?.chatUrl).toBe("https://chatgpt.com/c/new");
     expect(next.checkpoint?.originalGoal).toBe("dark mode");
+  });
+
+  it("uses an explicit URL for a checkpoint update while preserving its progress", () => {
+    const next = mergeSession(
+      {
+        url: "https://chatgpt.com/c/old",
+        taskId: "c2c_ab12",
+        iteration: 7,
+        checkpoint: {
+          taskId: "c2c_ab12",
+          iteration: 7,
+          protocolState: "EXECUTING",
+          waitingFor: "GPT_PLAN",
+          chatUrl: "https://chatgpt.com/c/old",
+          originalGoal: "preserve this goal",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        savedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        url: "https://chatgpt.com/c/current",
+        checkpoint: { protocolState: "EXECUTED_SENT" },
+      }
+    );
+    expect(next.url).toBe("https://chatgpt.com/c/current");
+    expect(next.checkpoint?.chatUrl).toBe("https://chatgpt.com/c/current");
+    expect(next.checkpoint?.protocolState).toBe("EXECUTED_SENT");
+    expect(next.checkpoint?.waitingFor).toBe("GPT_PLAN");
+    expect(next.checkpoint?.originalGoal).toBe("preserve this goal");
+  });
+
+  it("honors an explicitly supplied checkpoint chat URL over the top-level URL", () => {
+    const next = mergeSession(
+      {
+        url: "https://chatgpt.com/c/old",
+        taskId: "c2c_ab12",
+        savedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        url: "https://chatgpt.com/c/current",
+        checkpoint: {
+          protocolState: "EXECUTED_SENT",
+          chatUrl: "https://chatgpt.com/c/checkpoint",
+        },
+      }
+    );
+    expect(next.url).toBe("https://chatgpt.com/c/current");
+    expect(next.checkpoint?.chatUrl).toBe("https://chatgpt.com/c/checkpoint");
   });
 
   it("caps checkpoint text so it cannot become a log dump", () => {

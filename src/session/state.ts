@@ -261,8 +261,16 @@ export function mergeSession(previous: SavedSession | null, patch: SessionPatch)
         patch.checkpoint.nextExpectedStep ?? previous?.checkpoint?.nextExpectedStep,
         CHECKPOINT_LIMITS.nextExpectedStep
       ),
-      chatUrl: patch.checkpoint.chatUrl ?? previous?.checkpoint?.chatUrl ?? url,
+      chatUrl:
+        patch.checkpoint.chatUrl ??
+        (patch.url !== undefined ? url : previous?.checkpoint?.chatUrl ?? url),
       projectUrl: patch.checkpoint.projectUrl ?? previous?.checkpoint?.projectUrl ?? projectUrl,
+      updatedAt: new Date().toISOString(),
+    };
+  } else if (patch.url !== undefined && checkpoint) {
+    checkpoint = {
+      ...checkpoint,
+      chatUrl: url,
       updatedAt: new Date().toISOString(),
     };
   }
