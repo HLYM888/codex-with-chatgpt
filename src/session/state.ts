@@ -193,7 +193,33 @@ function capCheckpointText(value: string | undefined, max: number): string | und
   return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
 }
 
+function conversationIdFromUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value.trim());
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (host !== "chatgpt.com") return null;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const conversationMarker = segments.findIndex((segment) => segment.toLowerCase() === "c");
+    const conversationId = conversationMarker >= 0 ? segments[conversationMarker + 1] : undefined;
+    return conversationId ? decodeURIComponent(conversationId).toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+function assertSameConversationUrl(url: string, checkpointUrl: string): void {
+  const urlId = conversationIdFromUrl(url);
+  const checkpointId = conversationIdFromUrl(checkpointUrl);
+  if (!urlId || !checkpointId || urlId !== checkpointId) {
+    throw new Error("url and checkpoint.chatUrl must refer to the same ChatGPT conversation");
+  }
+}
+
 export function mergeSession(previous: SavedSession | null, patch: SessionPatch): SavedSession {
+  if (patch.url !== undefined && patch.checkpoint?.chatUrl !== undefined) {
+    assertSameConversationUrl(patch.url, patch.checkpoint.chatUrl);
+  }
+
   const conversationMode = patch.conversationMode ?? previous?.conversationMode;
   const rawProjectUrl = patch.projectUrl ?? previous?.projectUrl;
   let projectUrl = rawProjectUrl;

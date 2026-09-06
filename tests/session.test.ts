@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   clearChatPointer,
@@ -190,23 +192,42 @@ describe("mergeSession", () => {
     expect(next.checkpoint?.originalGoal).toBe("preserve this goal");
   });
 
-  it("honors an explicitly supplied checkpoint chat URL over the top-level URL", () => {
+  it("rejects conflicting explicit chat URLs before producing a session", () => {
+    expect(() =>
+      mergeSession(
+        {
+          url: "https://chatgpt.com/c/old",
+          taskId: "c2c_ab12",
+          savedAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          url: "https://chatgpt.com/c/current",
+          checkpoint: {
+            protocolState: "EXECUTED_SENT",
+            chatUrl: "https://chatgpt.com/c/checkpoint",
+          },
+        }
+      )
+    ).toThrow(/same ChatGPT conversation/);
+  });
+
+  it("accepts the same chat across project-route and display-query variants", () => {
     const next = mergeSession(
       {
-        url: "https://chatgpt.com/c/old",
+        url: "https://chatgpt.com/c/current",
         taskId: "c2c_ab12",
         savedAt: "2026-01-01T00:00:00.000Z",
       },
       {
-        url: "https://chatgpt.com/c/current",
+        url: "https://chatgpt.com/c/current?oai-dm=1",
         checkpoint: {
           protocolState: "EXECUTED_SENT",
-          chatUrl: "https://chatgpt.com/c/checkpoint",
+          chatUrl: "https://www.chatgpt.com/g/g-p-project-slug/c/current?display=project",
         },
       }
     );
-    expect(next.url).toBe("https://chatgpt.com/c/current");
-    expect(next.checkpoint?.chatUrl).toBe("https://chatgpt.com/c/checkpoint");
+    expect(next.url).toBe("https://chatgpt.com/c/current?oai-dm=1");
+    expect(next.checkpoint?.chatUrl).toBe("https://www.chatgpt.com/g/g-p-project-slug/c/current?display=project");
   });
 
   it("caps checkpoint text so it cannot become a log dump", () => {
@@ -249,6 +270,65 @@ describe("mergeSession", () => {
         projectUrl: "https://chatgpt.com/c/nope",
       })
     ).toThrow(/project URL/);
+  });
+});
+
+describe("session URL persistence", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs) cleanup(dir);
+    dirs.length = 0;
+    delete process.env.C2C_STATE_DIR;
+  });
+
+  it("round-trips the selected chat and preserves progress and other session bytes", () => {
+    const dir = makeTmpDir("session-pointer-v2");
+    dirs.push(dir);
+    process.env.C2C_STATE_DIR = dir;
+    const otherSession = {
+      url: "https://chatgpt.com/c/other",
+      taskId: "c2c_other",
+      savedAt: "2026-01-01T00:00:00.000Z",
+    };
+    writeSession("other-workspace", otherSession);
+    const otherPath = path.join(dir, "sessions", "other-workspace.json");
+    const otherBefore = fs.readFileSync(otherPath);
+
+    const saved = mergeSession(
+      {
+        url: "https://chatgpt.com/c/old",
+        taskId: "c2c_ab12",
+        iteration: 4,
+        checkpoint: {
+          taskId: "c2c_ab12",
+          iteration: 4,
+          protocolState: "EXECUTING",
+          waitingFor: "GPT_REVIEW",
+          originalGoal: "keep this progress",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        savedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        url: "https://chatgpt.com/g/g-p-project-slug/c/current?display=project",
+        checkpoint: { protocolState: "EXECUTED_SENT" },
+      }
+    );
+    writeSession("target-workspace", saved);
+
+    const loaded = readSession("target-workspace");
+    const view = resolveConversation(loaded, { sameThread: true });
+    expect(loaded?.url).toBe("https://chatgpt.com/g/g-p-project-slug/c/current?display=project");
+    expect(loaded?.checkpoint?.chatUrl).toBe("https://chatgpt.com/g/g-p-project-slug/c/current?display=project");
+    expect(loaded?.checkpoint?.taskId).toBe("c2c_ab12");
+    expect(loaded?.checkpoint?.iteration).toBe(4);
+    expect(loaded?.checkpoint?.protocolState).toBe("EXECUTED_SENT");
+    expect(loaded?.checkpoint?.waitingFor).toBe("GPT_REVIEW");
+    expect(loaded?.checkpoint?.originalGoal).toBe("keep this progress");
+    expect(view.chatUrl).toBe("https://chatgpt.com/g/g-p-project-slug/c/current?display=project");
+    expect(view.reuseSavedChat).toBe(true);
+    expect(fs.readFileSync(otherPath)).toEqual(otherBefore);
   });
 });
 
