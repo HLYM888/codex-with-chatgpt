@@ -10,6 +10,17 @@ description: >
 
 # Codex with ChatGPT
 
+## 普通 Chat 优先执行
+
+老板的默认偏好：先把当前普通 Chat 能独立完成的工作交给它，以减少 Codex 重复实现、计算和整理的额度消耗；不以消耗 Chat 额度本身为目标，不承诺节省比例，不自动改用 Work。
+
+- 优先交付：需求取舍和资料核实；函数、解析器、脚本及精确补丁；最小复现、反例和隔离测试；可读数据的计算、对账和图表；文档、表格、演示稿和其他文件制作；有真实工具支持的图片任务。要求完整产物及实际验证，不只给建议或大纲。
+- Codex 负责精确源版本与必要输入、本地集成、Windows/Docker/真实项目验证，以及当前已授权且本机具备权限的外部操作。Chat 若有经核实的外部写工具，可以在同等授权和单写入者约束内承担相应工作，不永久限制为只读。
+- 派工先复用当前能力证据。2026-09-06 的绑定 Chat 已交付代码、Git 补丁、Python/Node 隔离实验和浏览器合成用例；这不证明新会话具有相同工具，也不证明已运行用户项目。文件制作、图片或外部应用按本次工具和真实产物核实；当前没有已核实的 GitHub 写通道及 Windows/Docker 执行能力。
+- 每个工作包只需明确输入版本、一个产物、必要验证和执行边界；Chat 一次交出结论、文件/补丁、实际结果和限制，Codex 采用一次并只补目标环境所需验证。双方不从头重复同一工作，未变证据可复用。
+- 小任务若直接完成更省时省额度，不强制往返；Chat 忙碌或不可用时继续独立必要工作，不反复发送、不新建替代窗口。每个实质阶段或问题交回绑定 Chat 复核，参与实现的 Chat 不作为该成果的独立审计者。
+- 只传任务所需且已授权的数据，通过现有连接读取；不要求老板手工搬运长上下文，不发送秘密，不把生成文件等同写回本机或 GitHub，不把模拟通过等同真实运行通过。
+
 Both ChatGPT and Codex can execute work supported by their current tools.
 You (Codex) own overall progress, local integration and final verification.
 ChatGPT can deliver implementation, computations, artifacts, analysis and review;
