@@ -76,6 +76,7 @@ function pairingPage(opts: {
     "workspace.search": "Search this workspace",
     "git.read": "Read git status and diffs",
     "execution.read": "Read Codex execution summaries",
+    "artifacts.write": "将附件保存到已启用的候选收件箱（不覆盖源码）",
     offline_access: "Stay connected between sessions",
   };
   const scopeList = opts.scopes

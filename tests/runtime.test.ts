@@ -70,6 +70,7 @@ describe("findBridgeObservation", () => {
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
       detached: true,
+      windowsHide: true,
     });
     child.unref();
     try {
@@ -111,6 +112,22 @@ describe("findBridgeObservation", () => {
     } finally {
       await bridge.close();
     }
+  });
+
+  it("recognizes a dead recorded process when another project has reused its port", async () => {
+    dirs.push(isolateStateDir());
+    const root = makeTmpDir("reused-port-own");
+    const other = makeTmpDir("reused-port-other");
+    dirs.push(root, other);
+    const workspace = new Workspace(root);
+    const bridge = await startBridge({ workspaceRoot: other, port: 0, persistRuntime: false });
+    try {
+      writeRuntimeState(stubRuntime(workspace.id, workspace.root, 999_999_999, bridge.port));
+      expect(await findBridgeObservation(workspace.id, workspace.root)).toMatchObject({ state: "stopped", reason: "pid_missing" });
+      expect((await (await fetch(`${bridge.localBaseUrl()}/health`)).json()).workspaceId).toBe(bridge.workspace.id);
+      writeRuntimeState(stubRuntime(workspace.id, workspace.root, process.pid, bridge.port));
+      expect(await findBridgeObservation(workspace.id, workspace.root)).toMatchObject({ state: "unknown", reason: "workspace_mismatch" });
+    } finally { await bridge.close(); }
   });
 
   it("persists the selected commit and reports the same value through admin info", async () => {

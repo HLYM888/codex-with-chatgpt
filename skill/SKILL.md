@@ -25,15 +25,16 @@ description: >
 
 先用当前连接的 `workspace_info` 核对身份和实际读取能力；仅在工具已暴露且能力字段确认支持时使用批量与编码选项。先找路径和必要范围，再让 Chat 读取原文并交完整产物。文件续读必须核对返回的原始文件摘要；工具失败、截断和未支持格式不能当成空内容或完整成功。
 
-涉及批量代码、中文旧编码、分页版本或非文本材料时，按需读 [本地材料读取](references/local-reading.md)。不因这份技能存在就宣称已具备 PDF、Office、图片或文件回传能力；旧版本继续使用其真实可用接口。
+涉及批量代码、中文旧编码、分页版本或非文本材料时，按需读取当前源码位置 `<ACTUAL_CHECKOUT_PATH>/skill/references/local-reading.md`。资料目录先用 `list_material_roots`，输入变化用 `context_manifest`，文档或图片用 `read_material`；文件原件与产物回传分别用 `export_material`、`receive_deliverable`，以本轮实际暴露和已验证能力为准。
 
 Both ChatGPT and Codex can execute work supported by their current tools.
 You (Codex) own overall progress, local integration and final verification.
 ChatGPT can deliver implementation, computations, artifacts, analysis and review;
 do not restrict it to planning merely because this bridge is read-only.
-The C2C Bridge gives ChatGPT read-only MCP access to the current workspace, so
-control messages between you and ChatGPT stay tiny (< 1 KB) — ChatGPT pulls
-whatever data it needs by itself.
+The C2C Bridge provides authorized read access and, only when locally enabled
+and separately authorized, an attachment-only candidate inbox. It does not grant
+arbitrary source writes or execution. Keep control messages tiny (< 1 KB):
+ChatGPT pulls the needed material itself and returns its actual artifact.
 
 ## Capability-based execution sharing
 

@@ -112,6 +112,11 @@ export async function findBridgeObservation(
     return { state: "healthy", runtime };
   }
   if (health) {
+    // Another project may have reused this port after our process exited.
+    // A positively missing PID is a terminal observation, not a live conflict.
+    if (observePid(runtime.pid) === "missing") {
+      return { state: "stopped", runtime, reason: "pid_missing" };
+    }
     return { state: "unknown", runtime, reason: "workspace_mismatch" };
   }
 

@@ -70,22 +70,29 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists the ten read-only tools including bounded batch reading", async () => {
+  it("lists scoped material tools and bounded candidate-only receipt alongside existing tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
+    expect(tools.find((tool) => tool.name === "receive_deliverable")?._meta?.["openai/fileParams"]).toEqual(["file"]);
     expect(names).toEqual([
+      "context_manifest",
       "execution_output",
       "execution_summary",
+      "export_material",
       "git_diff",
       "git_status",
       "list_directory",
+      "list_material_roots",
+      "list_materials",
       "read_file",
       "read_files",
+      "read_material",
+      "receive_deliverable",
       "search_workspace",
       "test_status",
       "workspace_info",
     ]);
-    // no write tools in V1
+    // The inbox is bounded; arbitrary source writes and execution remain absent.
     for (const forbidden of ["write_file", "delete_file", "execute_shell", "git_commit", "install_package"]) {
       expect(names).not.toContain(forbidden);
     }
@@ -154,6 +161,43 @@ describe("MCP tools over Streamable HTTP", () => {
     } finally {
       await limitedClient.close();
     }
+  });
+
+  it("denies inbox receipt to the existing read-only token", async () => {
+    const output = await client.callTool({ name: "receive_deliverable", arguments: {
+      file: { file_id: "file-synthetic", download_url: "https://files.oaiusercontent.com/synthetic", file_name: "test.txt" },
+    } });
+    expect(output.isError).toBe(true);
+    expect(textOf(output)).toContain("artifacts.write");
+    expect(fs.existsSync(path.join(root, ".local", "c2c-inbox"))).toBe(false);
+  });
+
+  it("returns authorized root aliases and a source-bound change manifest without duplicating text", async () => {
+    const roots = await client.callTool({ name: "list_material_roots", arguments: {} });
+    expect((roots.structuredContent as any).result.roots).toHaveLength(1);
+    expect(JSON.stringify(roots)).not.toContain(root);
+    const manifest = await client.callTool({ name: "context_manifest", arguments: { items: [
+      { path: "hello.txt", expected_sha256: "0".repeat(64) }, { path: ".env" }, { path: "not-present.txt" },
+    ] } });
+    const entries = (manifest.structuredContent as any).result.items;
+    expect(entries[0]).toMatchObject({ path: "hello.txt", status: "ready", changed: true });
+    expect(entries[0].sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(entries[0].content).toBeUndefined();
+    expect(entries[1]).toMatchObject({ status: "unavailable", error: "ACCESS_DENIED_SENSITIVE_FILE" });
+    expect(entries[2]).toMatchObject({ status: "unavailable", error: "FILE_NOT_FOUND" });
+    expect(JSON.stringify(manifest)).not.toContain("supersecret");
+  });
+
+  it("exports exact bytes through a resource link across stateless requests and rejects a changed source", async () => {
+    const exported = await client.callTool({ name: "export_material", arguments: { path: "hello.txt" } });
+    const link = (exported.content as any[]).find((item) => item.type === "resource_link");
+    expect(link.uri).toContain(`c2c-material://${bridge.workspace.id}/`);
+    const contents = await client.readResource({ uri: link.uri });
+    expect(Buffer.from((contents.contents[0] as any).blob, "base64")).toEqual(fs.readFileSync(path.join(root, "hello.txt")));
+    const original = fs.readFileSync(path.join(root, "hello.txt"));
+    fs.writeFileSync(path.join(root, "hello.txt"), "changed while reference exists");
+    try { await expect(client.readResource({ uri: link.uri })).rejects.toThrow(); }
+    finally { fs.writeFileSync(path.join(root, "hello.txt"), original); }
   });
 
   it("list_directory lists the tree", async () => {
