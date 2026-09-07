@@ -120,7 +120,7 @@ function pairingPage(opts: {
 <body>
 <div class="card">
   <h1>${escapedProductName}</h1>
-  <p class="sub">ChatGPT is requesting access to workspace <strong>${escapedWorkspaceName}</strong> (read-only):</p>
+  <p class="sub">ChatGPT 请求访问工作区 <strong>${escapedWorkspaceName}</strong>（${opts.scopes.includes("artifacts.write") ? "读取及候选收件箱写入；不覆盖源码" : "只读"}）：</p>
   <ul>${scopeList}</ul>
   <form method="POST" action="authorize">
     <input type="hidden" name="request_id" value="${escapedRequestId}">

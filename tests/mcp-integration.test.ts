@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { Workspace } from "../src/workspace/manager.js";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -347,6 +348,33 @@ describe("MCP tools over Streamable HTTP", () => {
     const allowed = await limitedClient.callTool({ name: "read_file", arguments: { path: "hello.txt" } });
     expect(allowed.isError ?? false).toBe(false);
     await limitedClient.close();
+  });
+
+  it("reads code from an authorized alias and refuses a revoked directory listing", async () => {
+    const config = path.join(process.env.C2C_STATE_DIR!, "materials", `${bridge.workspace.id}.json`);
+    const materialRoot = makeTmpDir("authorized-material");
+    write(materialRoot, "code.py", "first\n中文第二行\nthird\n");
+    const settings = { version: 1, workspaceRoot: bridge.workspace.root, roots: [{ alias: "source", root: materialRoot }] };
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, JSON.stringify(settings));
+    try {
+      const read = await client.callTool({ name: "read_material", arguments: { root_alias: "source", path: "code.py", operation: "read", start: 2, count: 1 } });
+      expect(read.isError).not.toBe(true);
+      const data = (read.structuredContent as { result: Record<string, unknown> }).result;
+      expect(data.content).toBe("中文第二行");
+      expect(data.source).toMatchObject({ rootAlias: "source", path: "code.py" });
+      const original = Workspace.prototype.listDirectory;
+      const spy = vi.spyOn(Workspace.prototype, "listDirectory").mockImplementationOnce(async function(this: Workspace, ...args) {
+        const listing = await original.apply(this, args);
+        fs.writeFileSync(config, JSON.stringify({ ...settings, roots: [] }));
+        return listing;
+      });
+      try {
+        const listing = await client.callTool({ name: "list_materials", arguments: { root_alias: "source" } });
+        expect(listing.isError).toBe(true);
+        expect(textOf(listing)).not.toContain("code.py");
+      } finally { spy.mockRestore(); }
+    } finally { fs.unlinkSync(config); }
   });
 
   it("git_diff over MCP excludes sensitive files like .npmrc and service-account*.json", async () => {

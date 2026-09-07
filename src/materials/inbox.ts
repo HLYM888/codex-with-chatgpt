@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { MaterialCatalog, MaterialError } from "./catalog.js";
 import { downloadHostFile, MAX_DELIVERABLE_BYTES } from "./download.js";
 import { formatForPath, parseMaterial } from "./parser.js";
+import { withInboxGuard } from "./inbox-guard.js";
 
 export type HostFile = { download_url: string; file_id: string; mime_type?: string; file_name?: string };
 export type SourceRef = { root_alias: string; path: string; sha256: string };
@@ -81,11 +82,8 @@ export async function receiveDeliverable(
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   for (const source of sources) await catalog.readSource(source.root_alias, source.path, source.sha256);
   if (inboxRoot(catalog).abs !== before.abs) throw new MaterialError("AUTHORIZATION_CHANGED", "下载期间收件箱配置变化，未保存产物。");
-  fs.mkdirSync(before.abs, { recursive: true, mode: 0o700 });
-  if (fs.realpathSync.native(before.abs) !== before.abs) throw new MaterialError("INVALID_CONFIG", "收件箱路径身份发生变化。");
   const id = randomUUID();
   const deliveryDir = path.join(before.abs, id);
-  fs.mkdirSync(deliveryDir, { mode: 0o700 });
   const target = path.join(deliveryDir, name);
   const receipt = {
     id, fileName: name, path: `${before.rel}/${id}/${name}`, mimeType,
@@ -93,11 +91,23 @@ export async function receiveDeliverable(
     receivedAt: new Date().toISOString(), sources, adopted: false,
   };
   try {
-    fs.writeFileSync(target, bytes, { flag: "wx", mode: 0o600 });
-    fs.writeFileSync(path.join(deliveryDir, "receipt.json"), JSON.stringify(receipt, null, 2), { flag: "wx", mode: 0o600 });
-    if (inboxRoot(catalog).abs !== before.abs || fs.realpathSync.native(deliveryDir) !== deliveryDir) {
-      throw new MaterialError("AUTHORIZATION_CHANGED", "接收期间目录授权变化，请本地核对候选；未标记采用。");
+    const python = settings.pythonExecutable;
+    if (typeof python !== "string" || !path.isAbsolute(python)) {
+      throw new MaterialError("PARSER_NOT_CONFIGURED", "收件箱目录保护需要已配置的本地 Python 运行时。");
     }
+    await withInboxGuard(python, catalog.getWorkspace("workspace").root, before.abs, deliveryDir, () => {
+      // No awaits while holding the directory chain: a timeout must never
+      // release the protection then let a suspended writer continue.
+      if (inboxRoot(catalog).abs !== before.abs || fs.realpathSync.native(deliveryDir) !== deliveryDir) {
+        throw new MaterialError("AUTHORIZATION_CHANGED", "接收前目录授权变化，未保存文件。");
+      }
+      fs.writeFileSync(target, bytes, { flag: "wx", mode: 0o600 });
+      fs.writeFileSync(path.join(deliveryDir, "receipt.json"), JSON.stringify(receipt, null, 2), { flag: "wx", mode: 0o600 });
+      if (inboxRoot(catalog).abs !== before.abs) {
+        throw new MaterialError("AUTHORIZATION_CHANGED", "接收期间目录授权变化，请本地核对候选；未标记采用。");
+      }
+      return receipt;
+    });
   } catch (error) {
     // Preserve any partial file for local inspection, never claim a completed receipt.
     if (error instanceof MaterialError) throw error;

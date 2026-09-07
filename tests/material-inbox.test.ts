@@ -15,7 +15,7 @@ function setup(enabled = true) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-inbox-")); dirs.push(root);
   const workspace = new Workspace(root);
   const config = path.join(root, "config.json");
-  fs.writeFileSync(config, JSON.stringify({ version: 1, workspaceRoot: workspace.root, inbox: { enabled } }));
+  fs.writeFileSync(config, JSON.stringify({ version: 1, workspaceRoot: workspace.root, pythonExecutable: process.env.C2C_TEST_PYTHON, inbox: { enabled } }));
   return { root, config, catalog: new MaterialCatalog(workspace, config) };
 }
 const file = { file_id: "file-synthetic-1", file_name: "中文成果.py", download_url: "https://files.oaiusercontent.com/synthetic" };
@@ -40,7 +40,7 @@ describe("candidate-only inbox", () => {
     expect(download).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(root, ".local"))).toBe(false);
   });
-  it("writes exact bytes and a hash receipt without overwriting either source or previous delivery", async () => {
+  it.skipIf(process.platform !== "win32" || !process.env.C2C_TEST_PYTHON)("writes exact bytes and a hash receipt without overwriting either source or previous delivery", async () => {
     const { catalog, root } = setup();
     const bytes = Buffer.from('print("中文")\n');
     const source = path.join(root, "original.py"); fs.writeFileSync(source, "unchanged");

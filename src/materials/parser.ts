@@ -54,12 +54,12 @@ export async function parseMaterial(
     child.on("close", (code) => {
       if (settled) return;
       clearTimeout(timer);
-      if (code !== 0) { fail("PARSER_FAILED", "材料解析进程失败，未返回可采用内容。"); return; }
       try {
         const output = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        if (output?.ok === false && typeof output.error?.code === "string") {
+        if ((code === 0 || code === 2) && output?.ok === false && typeof output.error?.code === "string") {
           fail(output.error.code.slice(0, 80), String(output.error.message ?? "解析失败。").slice(0, 500)); return;
         }
+        if (code !== 0) { fail("PARSER_FAILED", "材料解析进程失败，未返回可采用内容。"); return; }
         if (output?.ok !== true || !output.data || typeof output.data !== "object" || Array.isArray(output.data)) {
           fail("INVALID_PARSER_OUTPUT", "解析器返回结构无效。"); return;
         }

@@ -110,6 +110,17 @@ describe("discovery metadata", () => {
 });
 
 describe("authorization + token flow", () => {
+  it("describes candidate-inbox write authorization accurately", async () => {
+    const clientId = await registerClient();
+    const { challenge } = pkceVerifierAndChallenge();
+    const params = new URLSearchParams({ client_id: clientId, redirect_uri: REDIRECT_URI, response_type: "code",
+      state: "write-label", code_challenge: challenge, code_challenge_method: "S256", scope: "workspace.read artifacts.write" });
+    const response = await fetch(`${base}/oauth/authorize?${params}`, { redirect: "manual" });
+    expect(response.status).toBe(200);
+    const page = await response.text();
+    expect(page).toContain("读取及候选收件箱写入；不覆盖源码");
+    expect(page).not.toContain("(read-only)");
+  });
   it("completes the full pairing + PKCE flow and calls MCP", async () => {
     const clientId = await registerClient();
     const { verifier, challenge } = pkceVerifierAndChallenge();
