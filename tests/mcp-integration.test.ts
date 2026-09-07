@@ -70,7 +70,7 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists all nine read-only tools", async () => {
+  it("lists the ten read-only tools including bounded batch reading", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
@@ -80,6 +80,7 @@ describe("MCP tools over Streamable HTTP", () => {
       "git_status",
       "list_directory",
       "read_file",
+      "read_files",
       "search_workspace",
       "test_status",
       "workspace_info",
@@ -117,6 +118,42 @@ describe("MCP tools over Streamable HTTP", () => {
     const result = await client.callTool({ name: "read_file", arguments: { path: "../../etc/hosts" } });
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain("PATH_OUTSIDE_WORKSPACE");
+  });
+
+  it("read_files exposes structured results while enforcing per-file policy", async () => {
+    const result = await client.callTool({ name: "read_files", arguments: {
+      items: [{ path: "hello.txt" }, { path: ".env" }], max_result_bytes: 4096,
+    } });
+    const data = result.structuredContent as { items: { ok: boolean; file?: { sha256: string }; error?: string }[] };
+    expect(data.items[0].ok).toBe(true);
+    expect(data.items[0].file?.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(data.items[1]).toMatchObject({ ok: false, error: "ACCESS_DENIED_SENSITIVE_FILE" });
+    expect(JSON.stringify(result)).not.toContain("supersecret");
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(4096);
+  });
+
+  it("refuses serialized single-file output beyond the transport budget", async () => {
+    write(root, "escaped-single-line.txt", '"'.repeat(150000));
+    const result = await client.callTool({ name: "read_file", arguments: { path: "escaped-single-line.txt" } });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("OUTPUT_TOO_LARGE");
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(4096);
+  });
+
+  it("requires workspace.read for the new batch tool", async () => {
+    const limited = bridge.authStore.issueTokens({ clientId: "batch-no-read", scopes: ["git.read"] });
+    const limitedClient = new Client({ name: "batch-no-read", version: "1.0.0" });
+    await limitedClient.connect(new StreamableHTTPClientTransport(new URL(`${bridge.localBaseUrl()}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${limited.accessToken}` } },
+    }));
+    try {
+      const denied = await limitedClient.callTool({ name: "read_files", arguments: { items: [{ path: "hello.txt" }] } });
+      expect(denied.isError).toBe(true);
+      expect(textOf(denied)).toContain("INSUFFICIENT_SCOPE");
+      expect(textOf(denied)).not.toContain("Hello from");
+    } finally {
+      await limitedClient.close();
+    }
   });
 
   it("list_directory lists the tree", async () => {

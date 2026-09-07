@@ -21,6 +21,12 @@ description: >
 - 小任务若直接完成更省时省额度，不强制往返；Chat 忙碌或不可用时继续独立必要工作，不反复发送、不新建替代窗口。每个实质阶段或问题交回绑定 Chat 复核，参与实现的 Chat 不作为该成果的独立审计者。
 - 只传任务所需且已授权的数据，通过现有连接读取；不要求老板手工搬运长上下文，不发送秘密，不把生成文件等同写回本机或 GitHub，不把模拟通过等同真实运行通过。
 
+## 按需读取本地材料
+
+先用当前连接的 `workspace_info` 核对身份和实际读取能力；仅在工具已暴露且能力字段确认支持时使用批量与编码选项。先找路径和必要范围，再让 Chat 读取原文并交完整产物。文件续读必须核对返回的原始文件摘要；工具失败、截断和未支持格式不能当成空内容或完整成功。
+
+涉及批量代码、中文旧编码、分页版本或非文本材料时，按需读 [本地材料读取](references/local-reading.md)。不因这份技能存在就宣称已具备 PDF、Office、图片或文件回传能力；旧版本继续使用其真实可用接口。
+
 Both ChatGPT and Codex can execute work supported by their current tools.
 You (Codex) own overall progress, local integration and final verification.
 ChatGPT can deliver implementation, computations, artifacts, analysis and review;

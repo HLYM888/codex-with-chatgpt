@@ -1,15 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import readline from "node:readline";
 import { IgnoreRules } from "./ignore.js";
 import { readJsonIfExists } from "../config/paths.js";
+import { readTextFile, type ReadTextOptions, type TextReadResult } from "./text-reader.js";
 
 export type WorkspaceErrorCode =
+  | "INVALID_ARGUMENTS"
   | "INVALID_PATH"
   | "PATH_OUTSIDE_WORKSPACE"
   | "ACCESS_DENIED_SENSITIVE_FILE"
   | "FILE_NOT_FOUND"
+  | "FILE_CHANGED"
   | "NOT_A_FILE"
   | "NOT_A_DIRECTORY"
   | "BINARY_FILE"
@@ -28,16 +30,8 @@ export class WorkspaceError extends Error {
 const CASE_INSENSITIVE = process.platform === "win32" || process.platform === "darwin";
 const normCase = (p: string): string => (CASE_INSENSITIVE ? p.toLowerCase() : p);
 
-export interface ReadFileResult {
+export interface ReadFileResult extends TextReadResult {
   path: string;
-  sizeBytes: number;
-  totalLines: number;
-  startLine: number;
-  endLine: number;
-  truncated: boolean;
-  remainingLines: number;
-  nextStartLine: number | null;
-  content: string;
 }
 
 export interface DirEntry {
@@ -59,10 +53,6 @@ export interface ProjectConfig {
   name?: string;
   maxIterations?: number;
 }
-
-const DEFAULT_MAX_LINES = 400;
-const HARD_MAX_LINES = 2000;
-const DEFAULT_MAX_BYTES = 256 * 1024;
 
 export class Workspace {
   readonly root: string;
@@ -152,80 +142,18 @@ export class Workspace {
     return { abs: canonical, rel };
   }
 
-  private async isBinary(abs: string): Promise<boolean> {
-    const fd = await fs.promises.open(abs, "r");
-    try {
-      const buf = Buffer.alloc(8192);
-      const { bytesRead } = await fd.read(buf, 0, buf.length, 0);
-      for (let i = 0; i < bytesRead; i++) {
-        if (buf[i] === 0) return true;
-      }
-      return false;
-    } finally {
-      await fd.close();
-    }
-  }
-
   async readFile(
     requested: string,
-    opts: { startLine?: number; endLine?: number; maxLines?: number; maxBytes?: number } = {}
+    opts: ReadTextOptions = {}
   ): Promise<ReadFileResult> {
     const { abs, rel } = this.resolve(requested);
-    let stat: fs.Stats;
-    try {
-      stat = await fs.promises.stat(abs);
-    } catch {
-      throw new WorkspaceError("FILE_NOT_FOUND", `File not found: ${rel}`);
+    const result = await readTextFile(abs, opts);
+    // Recheck authorization before publishing the result, including a root
+    // or junction that changed while the asynchronous read was in progress.
+    if (this.resolve(requested).abs !== abs) {
+      throw new WorkspaceError("FILE_CHANGED", "文件路径在读取期间发生变化，请重新定位。");
     }
-    if (!stat.isFile()) {
-      throw new WorkspaceError("NOT_A_FILE", `Not a regular file: ${rel}`);
-    }
-    if (await this.isBinary(abs)) {
-      throw new WorkspaceError("BINARY_FILE", `Binary file (${stat.size} bytes): ${rel}. Content is not returned.`);
-    }
-
-    const startLine = Math.max(1, Math.floor(opts.startLine ?? 1));
-    const maxLines = Math.min(HARD_MAX_LINES, Math.max(1, Math.floor(opts.maxLines ?? DEFAULT_MAX_LINES)));
-    const endLimit = opts.endLine
-      ? Math.min(Math.floor(opts.endLine), startLine + HARD_MAX_LINES - 1)
-      : startLine + maxLines - 1;
-    const maxBytes = Math.min(1024 * 1024, Math.max(1024, Math.floor(opts.maxBytes ?? DEFAULT_MAX_BYTES)));
-
-    const lines: string[] = [];
-    let totalLines = 0;
-    let collectedBytes = 0;
-    let byteTruncated = false;
-    let actualEnd = startLine - 1;
-
-    const stream = fs.createReadStream(abs, { encoding: "utf8" });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of rl) {
-      totalLines++;
-      if (totalLines >= startLine && totalLines <= endLimit && !byteTruncated) {
-        const cost = Buffer.byteLength(line, "utf8") + 1;
-        if (collectedBytes + cost > maxBytes && lines.length > 0) {
-          byteTruncated = true;
-        } else {
-          lines.push(line);
-          collectedBytes += cost;
-          actualEnd = totalLines;
-        }
-      }
-    }
-    rl.close();
-
-    const remaining = Math.max(0, totalLines - actualEnd);
-    return {
-      path: rel,
-      sizeBytes: stat.size,
-      totalLines,
-      startLine: Math.min(startLine, Math.max(totalLines, 1)),
-      endLine: actualEnd,
-      truncated: remaining > 0,
-      remainingLines: remaining,
-      nextStartLine: remaining > 0 ? actualEnd + 1 : null,
-      content: lines.join("\n"),
-    };
+    return { path: rel, ...result };
   }
 
   async listDirectory(
