@@ -91,4 +91,12 @@ describe("host file download boundary", () => {
     expect(isPublicAddress("1.1.1.1")).toBe(true);
     expect(isPublicAddress("2606:4700:4700::1111")).toBe(true);
   });
+  it("reports host compatibility failures without credentials, path, query or fragment values", () => {
+    let message = "";
+    try { validateDownloadUrl("https://privateuser:privatepassword@new-host.example.test/privatepath?sig=privatesignature#privatefragment"); }
+    catch (error) { message = (error as Error).message; }
+    expect(message).toContain('"host":"new-host.example.test"');
+    expect(message).toContain('"hostAllowed":false');
+    for (const secret of ["privateuser", "privatepassword", "privatepath", "privatesignature", "privatefragment"]) expect(message).not.toContain(secret);
+  });
 });
