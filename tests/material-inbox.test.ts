@@ -96,7 +96,11 @@ describe("host file download boundary", () => {
     try { validateDownloadUrl("https://privateuser:privatepassword@new-host.example.test/privatepath?sig=privatesignature#privatefragment"); }
     catch (error) { message = (error as Error).message; }
     expect(message).toContain('"host":"new-host.example.test"');
-    expect(message).toContain('"hostAllowed":false');
+    expect(JSON.parse(message.split("脱敏诊断：")[1])).toEqual({ protocol: "https:", host: "new-host.example.test", rejected: true });
     for (const secret of ["privateuser", "privatepassword", "privatepath", "privatesignature", "privatefragment"]) expect(message).not.toContain(secret);
+    for (const value of ["https://privateuser:privatepassword@files.oaiusercontent.com/a", "https://files.oaiusercontent.com/a#privatefragment"]) {
+      try { validateDownloadUrl(value); throw new Error("unexpected success"); }
+      catch (error) { expect(JSON.parse((error as Error).message.split("脱敏诊断：")[1])).toEqual({ protocol: "https:", host: "files.oaiusercontent.com", rejected: true }); }
+    }
   });
 });

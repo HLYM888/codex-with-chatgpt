@@ -31,8 +31,7 @@ export function validateDownloadUrl(value: string, extraHosts: string[] = []): U
   const allowed = host === "files.oaiusercontent.com" || host.endsWith(".oaiusercontent.com") || extraHosts.includes(host);
   if (url.protocol !== "https:" || url.username || url.password || url.hash ||
       (url.port && url.port !== "443") || net.isIP(host.replace(/^\[|\]$/g, "")) || !allowed) {
-    const diagnostic = JSON.stringify({ protocol: url.protocol.slice(0, 24), host: host.slice(0, 253), port: url.port || "default", hostAllowed: allowed,
-      hasUserInfo: Boolean(url.username || url.password), hasFragment: Boolean(url.hash) });
+    const diagnostic = JSON.stringify({ protocol: url.protocol.slice(0, 24), host: host.slice(0, 253), rejected: true });
     throw new MaterialError("UNTRUSTED_DOWNLOAD", `只接受已配置可信宿主提供的 HTTPS 文件引用。脱敏诊断：${diagnostic}`);
   }
   return url;
