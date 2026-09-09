@@ -103,8 +103,9 @@ export function writeSession(workspaceId: string, session: SavedSession): SavedS
 export function normalizeProjectUrl(url: string): string | null {
   try {
     const parsed = new URL(url.trim());
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port) return null;
     if (parsed.hostname !== "chatgpt.com" && parsed.hostname !== "www.chatgpt.com") return null;
-    const match = parsed.pathname.match(/^\/g\/(g-p-[a-zA-Z0-9]+)\/project\/?$/);
+    const match = parsed.pathname.match(/^\/g\/(g-p-[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*)\/project\/?$/);
     if (!match) return null;
     return `https://chatgpt.com/g/${match[1]}/project`;
   } catch {
@@ -115,7 +116,7 @@ export function normalizeProjectUrl(url: string): string | null {
 export function projectIdFromUrl(url: string): string | null {
   const normalized = normalizeProjectUrl(url);
   if (!normalized) return null;
-  return normalized.match(/\/g\/(g-p-[a-zA-Z0-9]+)\/project/)?.[1] ?? null;
+  return normalized.match(/\/g\/(g-p-[a-zA-Z0-9]+)(?:-[a-zA-Z0-9]+)*\/project/)?.[1] ?? null;
 }
 
 export function resolveConversation(

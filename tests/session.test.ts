@@ -15,6 +15,26 @@ import { cleanup, makeTmpDir } from "./helpers.js";
 const PROJECT = "https://chatgpt.com/g/g-p-6a94399430e08191860ab5364b7748b8/project";
 
 describe("normalizeProjectUrl", () => {
+  it("preserves observed project slugs while retaining stable project identity", () => {
+    const slugged = PROJECT.replace("/project", "-wang-ye-aigong-si-zong-kong/project");
+    expect(normalizeProjectUrl(`${slugged}/?foo=1#main`)).toBe(slugged);
+    expect(projectIdFromUrl(slugged)).toBe(projectIdFromUrl(PROJECT));
+    const saved = mergeSession(null, { conversationMode: "project", projectUrl: slugged });
+    expect(resolveConversation(saved).projectUrl).toBe(slugged);
+    expect(resolveConversation(saved).reuseSavedChat).toBe(false);
+  });
+
+  it("rejects unsafe origins and malformed slug paths", () => {
+    for (const url of [
+      PROJECT.replace("https:", "http:"),
+      PROJECT.replace("chatgpt.com", "chatgpt.com.evil.test"),
+      PROJECT.replace("chatgpt.com", "user:secret@chatgpt.com"),
+      PROJECT.replace("chatgpt.com", "chatgpt.com:8443"),
+      PROJECT.replace("/project", "-name%2Fother/project"),
+      PROJECT.replace("/project", "-/project"),
+    ]) expect(normalizeProjectUrl(url)).toBeNull();
+  });
+
   it("accepts the collection URL and strips extras", () => {
     expect(normalizeProjectUrl(`${PROJECT}/`)).toBe(PROJECT);
     expect(normalizeProjectUrl("https://www.chatgpt.com/g/g-p-abc123/project?foo=1")).toBe(

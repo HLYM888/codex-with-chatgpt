@@ -209,6 +209,18 @@ Use the current in-app browser tool documentation, not remembered APIs.
    required URL differs. Never reuse another task's chat merely because it is
    open, and do not control unrelated browser surfaces.
 
+   **项目入口兼容恢复。** 保存网页实际提供且已验证打开的完整项目 URL，
+   保留项目 ID 后的名称后缀；不要手工删除后缀或猜名称。项目身份比较使用
+   稳定的 `g-p-<id>`，名称变化不代表另一个项目。项目页直接加载或刷新可能
+   仅显示“重试”，即使完整 URL 正确也如此；使用已加载页面中的项目链接
+   进行站内跳转，不把链接再交给 `goto`。新线程优先只读打开该工作区已保存
+   的旧对话，从页面的“打开项目”链接进入同一项目。旧对话仅用于取入口，
+   不发送消息、不据此绑定当前任务。没有可用旧对话时，可打开首页，待侧栏
+   加载后选择可核实的同一项目；不得在首页发送协作消息。此恢复路径是下文
+   直接项目导航及禁止首页/侧栏规则的限定例外。确认项目 ID 一致、标题及
+   “项目中的新聊天”输入框后，只更新 `--project-url`，保留原对话和任务
+   检查点。找不到可验证的入口则停止此路径并报告；不要重建连接器或循环重试。
+
 3. **Visible and retained.** Keep the collaboration tab visible and retained.
    Use `markHandoff` / `markDeliverable` or visibility controls only if the
    runtime documents them. Do not close the user's collaboration tab or let a
@@ -587,7 +599,9 @@ verified cross-thread binding.
 
 - If you already saved a ChatGPT chat URL earlier in THIS Codex conversation:
   `goto` that URL. Continue. No new chat. No HANDOFF.
-- Else if `conversation.projectReady`: `goto` `conversation.projectUrl`.
+- Else if `conversation.projectReady`: use **项目入口兼容恢复** above to enter
+  the verified Project through an on-page link when a saved chat is available;
+  otherwise try the saved Project URL once, then the bounded recovery path.
   On that page, use the on-page composer (「{项目名}中的新聊天」 / "New chat
   in …"). Do not use the sidebar and do not `goto` `https://chatgpt.com/`.
   Confirm Chat mode (**In-app browser** §7). Boot prompt, then workspace_info
