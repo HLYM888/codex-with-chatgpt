@@ -601,7 +601,7 @@ verified cross-thread binding.
   `goto` that URL. Continue. No new chat. No HANDOFF.
 - Else if `conversation.projectReady`: use **项目入口兼容恢复** above to enter
   the verified Project through an on-page link when a saved chat is available;
-  otherwise try the saved Project URL once, then the bounded recovery path.
+  otherwise use the homepage sidebar recovery path, verifying the same Project.
   On that page, use the on-page composer (「{项目名}中的新聊天」 / "New chat
   in …"). Do not use the sidebar and do not `goto` `https://chatgpt.com/`.
   Confirm Chat mode (**In-app browser** §7). Boot prompt, then workspace_info
@@ -619,7 +619,8 @@ Also offer「继续用长对话」. If they pick long-chat:
 `c2c session set -w <ws> --mode long-chat` and use the long-chat path.
 If the collection 404s or the new chat is not inside the Project, same choice.
 
-**Saved chat 404s** (this thread): `goto` the collection, open a new chat
+**Saved chat 404s** (this thread): use **项目入口兼容恢复** to enter the same collection
+through the loaded homepage sidebar, open a new chat
 there, boot + HANDOFF from `session.checkpoint` (no logs) + workspace_info,
 then save the new chat URL. Keep `--project-url`.
 
