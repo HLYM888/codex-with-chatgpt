@@ -71,10 +71,9 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists scoped material tools and bounded candidate-only receipt alongside existing tools", async () => {
+  it("lists scoped material tools alongside existing tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
-    expect(tools.find((tool) => tool.name === "receive_deliverable")?._meta?.["openai/fileParams"]).toEqual(["file"]);
     expect(names).toEqual([
       "context_manifest",
       "execution_output",
@@ -88,12 +87,11 @@ describe("MCP tools over Streamable HTTP", () => {
       "read_file",
       "read_files",
       "read_material",
-      "receive_deliverable",
       "search_workspace",
       "test_status",
       "workspace_info",
     ]);
-    // The inbox is bounded; arbitrary source writes and execution remain absent.
+    // Arbitrary source writes and execution remain absent.
     for (const forbidden of ["write_file", "delete_file", "execute_shell", "git_commit", "install_package"]) {
       expect(names).not.toContain(forbidden);
     }
@@ -162,15 +160,6 @@ describe("MCP tools over Streamable HTTP", () => {
     } finally {
       await limitedClient.close();
     }
-  });
-
-  it("denies inbox receipt to the existing read-only token", async () => {
-    const output = await client.callTool({ name: "receive_deliverable", arguments: {
-      file: { file_id: "file-synthetic", download_url: "https://files.oaiusercontent.com/synthetic", file_name: "test.txt" },
-    } });
-    expect(output.isError).toBe(true);
-    expect(textOf(output)).toContain("artifacts.write");
-    expect(fs.existsSync(path.join(root, ".local", "c2c-inbox"))).toBe(false);
   });
 
   it("returns authorized root aliases and a source-bound change manifest without duplicating text", async () => {

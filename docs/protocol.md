@@ -26,6 +26,81 @@ uppercase English snake-case content headings such as `REVIEW_BASIS`,
 Translate verdict values as `通过`, `需修正`, or `阻断`. ChatGPT replies in
 Simplified Chinese unless the user explicitly requests another language.
 
+## Roles and windows (规划窗口与验收窗口)
+
+A workspace may keep two collaboration windows: `planning` (discussion and
+planning) and `audit` (independent acceptance). They are **workflow purposes**,
+not new Canonical Roles, and they do not change what Codex, DSH or Luna do.
+
+- `planning`: the current CONTROLLER discusses, researches and reviews the
+  process there; Codex owns local integration, DSH implements, and Codex runs
+  the real tests. Review inside the planning window is not independent audit of
+  the same result.
+- `audit`: a dedicated, isolated context that reads only the **frozen
+  candidate**, the original user goal, the spec, the standards and the raw test
+  evidence. The preferred route is a reusable audit Project pool: each
+  concurrent audit gets a different project-only Project, new Chat, and exact
+  candidate, with no active cross-task sharing. Reuse requires complete records
+  saved to the source project and verified removal/archiving of the finished
+  chat and business materials; the pool follows actual concurrency, has no
+  unsupported fixed cap or automatic allocator, and does not accumulate
+  cross-project audit memory. If a pool slot, cleanup, or isolation cannot be
+  verified, use a fresh temporary Chat with native frozen attachments without
+  forcing a queue.
+  It may give a conclusion about the frozen candidate, but cannot give its own
+  implementation or work package a self-PASS. Findings go back to
+  planning/Codex.
+- Bindings are saved per Codex owner thread with the maintenance entry
+  `node "<ACTUAL_CHECKOUT_PATH>/dist/cli/index.js" session --role planning|audit …`.
+  They are separate records: a role write never rewrites the
+  workspace session, and the audit binding never overwrites the planning URL.
+  The first planning and audit bindings must each read back a complete,
+  verifiable Project-chat identity: full chat URL, exact matching Project
+  identity, and the same workspace connector. After a complete binding exists,
+  updates may change only supported task, title or checkpoint fields. An
+  incomplete read-back is unusable and fails closed; do not claim it is bound
+  or fall back to legacy routing. The first audit binding additionally requires
+  the exact candidate SHA; task or iteration changes must explicitly confirm
+  it, while a status-only update may reuse an unchanged candidate. If URL or
+  Project changes while an old checkpoint exists, clear the checkpoint through
+  the maintenance entry before rebinding; never inherit it silently.
+- Isolation: the `audit` binding is the persistent C2C Project pool route
+  (project-only memory) for a candidate and repair chain, with exclusive
+  one-task use, no active cross-task sharing, prior chats/materials removed, and a **different
+  conversation ID and a different Project ID** from planning and the **same**
+  workspace connector. Use a pool Project only when its slot, native identity,
+  exact snapshot, memory isolation and read-only boundaries are verified; each
+  active audit uses a different Project. If a slot, cleanup or isolation is
+  unavailable, use the temporary attachment route without forcing a queue.
+  Never create a second connector, and a different Project grants no extra
+  local read/write permission.
+- Before UI occupation, create the selected pool lease atomically with
+  `create-exclusive/wx` in the actual C2C state directory, recording complete
+  owner, task, `auditRun`, and `stage=preparing`; add the exact candidate before
+  sending the audit. Never take another owner's lease or
+  infer idleness from timeout; same-owner recovery verifies the actual task.
+  After evidence and cleanup read-back, verify the owner before releasing it.
+  The index only locates projects, and a local lease cannot prove
+  cross-machine exclusivity; use a new isolated environment when it cannot be
+  proven.
+- The candidate SHA is metadata only: it does not record PASS, prove file
+  verification, or prove hard isolation. The temporary frozen-attachment route
+  remains the fallback when pool conditions cannot be verified.
+- A candidate or input change updates the binding and re-audits the affected
+  part. A materially new candidate needs a fresh isolated context; the repair
+  chain of one unchanged candidate may be reviewed in the same audit window.
+- The temporary frozen-attachment route is defined in
+  `skill/references/workflows/independent-audit.md`. Its URL may lack `/c/` and
+  must not be written to a C2C role binding. If a read-only frozen material set,
+  clean context or complete attachment read cannot be proven, report an
+  ordinary review or an incomplete audit — never claim independent audit.
+- C2C is the reading path and frozen evidence is the acceptance input rule;
+  they may be used together. A Project audit may read an authorized exact
+  snapshot and, after `workspace_info`, Codex may attach authorized frozen
+  originals that the current connection cannot read. Attachment completeness
+  and record boundaries still apply; ordinary planning keeps the MCP-only
+  body rule and does not paste code or logs or add data permission.
+
 ## States
 
 ```
@@ -44,13 +119,18 @@ INIT → PLAN → EXECUTING → EXECUTED → REVIEW → PLAN | DONE | BLOCKED | 
 | ERROR | either | Protocol/infrastructure failure |
 | HANDOFF | Codex | Continuation brief sent to a replacement conversation |
 
-There is no `STATE: RESUME`. If Codex restarts mid-task, it reads a **local
-checkpoint** on the session file (`protocolState`, `waitingFor`, goal, issues,
-next step). Those values are not ChatGPT protocol states. ChatGPT still sees
-only the table above. If the original chat is gone, Codex sends HANDOFF
-built from the checkpoint (never from logs).
+There is no `STATE: RESUME`, and no `STATE: AUDIT_REQUEST`: ChatGPT sees only
+the table above. Marking a stage as needing independent acceptance is ordinary
+Chinese prose, never an invented protocol state. If Codex restarts mid-task,
+it first selects exactly one local record: the complete planning-role record
+for a Project route, or the workspace legacy session for long-chat
+compatibility. It reads that record's **local checkpoint** (`protocolState`,
+`waitingFor`, goal, issues, next step) and never mixes the two records. Those
+values are not ChatGPT protocol states. ChatGPT still sees only the table
+above. If the original chat is gone, Codex sends HANDOFF built from the
+selected checkpoint (never from logs).
 
-Local checkpoint values (session only):
+Local checkpoint values (selected record only):
 
 | Checkpoint | Meaning |
 | --- | --- |
@@ -62,7 +142,8 @@ Local checkpoint values (session only):
 | `DONE` / `BLOCKED` | Terminal; DONE should `--clear-checkpoint` |
 
 Legacy sessions without a checkpoint keep the old loop. The first normal
-iteration after this version writes a checkpoint automatically.
+iteration after this version writes a checkpoint to the already selected
+record; a bound planning role never falls back to the legacy session.
 
 Do not re-pair, recreate the connector, or rewrite Project instructions
 just to resume.
@@ -71,6 +152,11 @@ just to resume.
 
 Every control message starts with `[C2C]` and key-value headers, then sections.
 Keep messages < 1 KB. No diffs, no logs, no file bodies.
+
+已授权冻结附件独立验收按 `skill/references/workflows/independent-audit.md` 的窄例外
+执行：原生附件承载冻结原件和索引，不粘控制消息正文；不要求临时模式调用禁用插件的
+`workspace_info`，不强制永久 `/c/`，也不受普通 C2C 仅 MCP 正文规则阻断。其余 C2C
+连接器、Doctor、发送保护、等待和权限守护不变。
 
 ### INIT (Codex → ChatGPT)
 
@@ -183,17 +269,23 @@ ITERATION: 3
 - **long-chat:** one long-lived C2C conversation per workspace. Codex opens a
   replacement chat only when the user asks, the old chat lags, or the chat was
   lost.
-- **project:** one ChatGPT Project (collection) per workspace. A new Codex
-  conversation starts a new chat **inside that Project**. The same Codex
-  conversation keeps using its saved chat URL.
+- **project:** a workspace's planning work stays in one ChatGPT Project
+  (collection). Independent acceptance first selects a reusable project-only
+  audit Project pool: each concurrent audit gets a different Project, new Chat
+  and exact candidate. If pool availability, exclusive use, cleanup or
+  isolation cannot be verified, a fresh temporary Chat with frozen native
+  attachments fills the slot without forcing a queue. A new Codex conversation
+  starts a new chat **inside the relevant Project**. The temporary route has no
+  role binding; persistent C2C chats use the URL saved in their
+  `--role planning|audit` binding.
 
 Right after the boot prompt, Codex sends a HANDOFF so the new chat can
 continue — a brief, never a data dump (the new chat re-reads code via MCP).
 Project instructions and project-only memory hold durable workspace identity.
-HANDOFF still wins for the current task:
-
-Trust order: connector (current code) > HANDOFF (this task) > Project
-instructions > Project memory.
+A HANDOFF is a locator, not authority: current explicit user instructions,
+platform boundaries and effective project contracts determine the objective and
+permissions; code, Git and runtime evidence verify actual state. Recheck the
+HANDOFF before continuing. It cannot override current rules or widen scope.
 
 ```
 [C2C]
@@ -254,29 +346,31 @@ Send once at the start of every new C2C conversation:
 ## Project instructions
 
 New workspaces store durable identity in the ChatGPT Project settings
-(指令), not in every boot prompt. The Skill fills this template once.
-Never put a public or temporary URL in the instructions — only the
-connector **name**.
+(指令), not in every boot prompt. The single canonical template is
+`skill/references/workflows/conversations.md`, under **Project instructions
+(paste into 项目设置 → 指令)**. The Skill fills that template once. Do not keep
+a second copy here, and never put a public or temporary URL in the instructions
+— only the connector **name**.
 
-```
-你与 Codex 按实际能力分担规划、执行与复核，Codex 负责本地集成和最终验证。对独立工作包交付具体成果，说明实际工具、验证结果与未执行部分。
+Fill this template by window purpose:
 
-本项目仅绑定到：
-- 工作区名称：{{workspace_name}}
-- 类型：{{project_type}}（{{languages}} / {{frameworks}}）
-- 连接（只能使用这个）：{{connector_name}}
+- **planning window**: discussion, research and process review with the current
+  CONTROLLER; Codex owns local integration, DSH implements, and Codex runs the
+  real tests. This window is not the independent auditor of its own result.
+- **audit window**: read-only frozen candidate, the original user goal as
+  originally stated, the spec, the standards and the raw test evidence only.
+  It must not modify the candidate or give its own implementation a self-PASS;
+  it may issue a conclusion about the frozen candidate and returns findings.
+  If it cannot prove a read-only frozen material set and a clean context, it
+  reports an ordinary review or an incomplete audit.
 
-访问本地工作区只使用上述连接，不得使用其他 Codex with ChatGPT 连接。可使用本次任务已授权的原生计算、文件或检索工具；不得据只读连接推断本地命令或写入能力。
-如果 workspace_info 返回了不同的工作区名称，立即停止，不要规划，也不要使用本项目的记忆。
-
-通过该连接读取代码、Git 状态、差异和已允许读取的命令输出。不得要求任何人粘贴文件正文、差异或日志。
-收到 EXECUTED 后，如果 execution_output 中存在可读项目，先 list 再 read；如果状态为 restricted，改为从 Git 复核。
-不得把仓库上传到本项目的文件或来源中。
-
-权限以最新明确用户指令、平台边界与当前有效项目规则为准。代码、Git和运行证据证明实际状态；项目规格定义目标。冲突时调查，HANDOFF与记忆只帮助定位，不授予权限。
-
-本项目记忆只属于该工作区。收到 HANDOFF 后核对当前身份、授权、短入口及必要证据，从仍然有效的下一步继续，不因旧摘要重做已完成工作。
-
-所有用户可见内容、解释、计划、复核结论和会话标题都使用简体中文。只有 C2C 固定信封字段 `[C2C]`、`STATE`、`TASK_ID`、`ITERATION` 及其协议状态值可以保留英文；工具名、代码、命令、路径和精确标识符保持原样。其他内容章节标题和标签必须使用自然的简体中文，禁止输出 `REVIEW_BASIS`、`ACCEPTED_SCOPE`、`RESIDUAL_RISK`、`ROLLBACK`、`NEXT_EXPECTED_STEP`、`VERDICT` 等大写英文下划线标题；分别使用“复核依据”“验收范围”“剩余风险”“回滚方法”“下一步”“结论”，结论值使用“通过”“需修正”或“阻断”。
-内容必须具体，说明原因、涉及文件和测试建议；不要空洞的一句话，也不要生成四十步史诗。使用 C2C 控制消息格式。
-```
+Both windows select the model tier under the current global rules and Codex
+verifies the real selection in the UI; message text never switches the web
+model. Keep the existing default and fallback policy unchanged: default GPT-5.6
+Sol Pro. Select GPT-6 Pro when deeper reasoning is expected to improve the
+result under the current global policy; high impact and a prior Sol failure are
+not prerequisites. Switch back to GPT-5.6 Sol Pro once the GPT-6 Pro reply is
+handled. A new explicit user instruction wins;
+missing model availability, quota or tools is reported, never silently
+downgraded. Send an audit only for stages that need independent acceptance — do
+not turn every small edit into two Pro rounds.

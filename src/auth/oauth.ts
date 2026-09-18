@@ -76,7 +76,6 @@ function pairingPage(opts: {
     "workspace.search": "Search this workspace",
     "git.read": "Read git status and diffs",
     "execution.read": "Read Codex execution summaries",
-    "artifacts.write": "将附件保存到已启用的候选收件箱（不覆盖源码）",
     offline_access: "Stay connected between sessions",
   };
   const scopeList = opts.scopes
@@ -120,7 +119,7 @@ function pairingPage(opts: {
 <body>
 <div class="card">
   <h1>${escapedProductName}</h1>
-  <p class="sub">ChatGPT 请求访问工作区 <strong>${escapedWorkspaceName}</strong>（${opts.scopes.includes("artifacts.write") ? "读取及候选收件箱写入；不覆盖源码" : "只读"}）：</p>
+  <p class="sub">ChatGPT 请求访问工作区 <strong>${escapedWorkspaceName}</strong>（只读）：</p>
   <ul>${scopeList}</ul>
   <form method="POST" action="authorize">
     <input type="hidden" name="request_id" value="${escapedRequestId}">

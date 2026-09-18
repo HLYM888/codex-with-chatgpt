@@ -6,7 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Workspace, WorkspaceError } from "../workspace/manager.js";
 import { MaterialCatalog, MaterialError } from "./catalog.js";
 import { formatForPath, parseMaterial } from "./parser.js";
-import { receiveDeliverable, deliverableMime } from "./inbox.js";
+import { materialMime } from "./mime.js";
 import { TextReadError, type TextReadRequestedEncoding } from "../workspace/text-reader.js";
 
 const readonly = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
@@ -136,7 +136,7 @@ export function registerMaterialTools(server: McpServer, workspace: Workspace): 
       const source = await catalog.readSource(args.root_alias, args.path, args.expected_sha256, 10 * 1024 * 1024);
       const token = randomBytes(24).toString("hex");
       let mime = "application/octet-stream";
-      try { mime = deliverableMime(source.path, source.bytes); } catch { /* Preserve unknown authorized originals as binary. */ }
+      try { mime = materialMime(source.path, source.bytes); } catch { /* Preserve unknown authorized originals as binary. */ }
       sweepExports();
       if (exports.size >= 128) throw new MaterialError("RESOURCE_LIMIT", "活动原件引用已达上限，请等旧引用过期。");
       exports.set(token, { workspaceId: workspace.id, owner: owner(extra.authInfo), alias: args.root_alias,
@@ -158,15 +158,4 @@ export function registerMaterialTools(server: McpServer, workspace: Workspace): 
       return { contents: [{ uri: uri.href, mimeType: grant.mime, blob: source.bytes.toString("base64") }] };
     });
 
-  server.registerTool("receive_deliverable", {
-    title: "接收 Chat 产物", description: "将当前Chat生成或用户提供的附件保存到本项目已启用的固定候选收件箱。单文件最多10MiB，保留中文名，不覆盖源文件、不执行产物。必须传入宿主附件引用，不编造下载URL。",
-    inputSchema: { file: z.object({ download_url: z.string(), file_id: z.string(), mime_type: z.string().optional(), file_name: z.string().optional() }).strict(),
-      sources: z.array(z.object({ root_alias: z.string().default("workspace"), path: z.string().max(1024), sha256: z.string().regex(/^[a-f0-9]{64}$/i) })).max(8).default([]) },
-    outputSchema, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
-    _meta: { "openai/fileParams": ["file"], securitySchemes: [{ type: "oauth2", scopes: ["artifacts.write", "workspace.read"] }] },
-  }, async (args, extra) => {
-    const authError = denied(extra.authInfo, "artifacts.write") ?? denied(extra.authInfo, "workspace.read"); if (authError) return authError;
-    try { return result(await receiveDeliverable(catalog, args.file, args.sources), "产物已进入候选收件箱，尚未采用。"); }
-    catch (error) { return failure(error); }
-  });
 }

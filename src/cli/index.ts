@@ -54,6 +54,13 @@ import {
   type ProtocolState,
   type WaitingFor,
 } from "../session/state.js";
+import {
+  resolveOwnerThreadId,
+  ROLE_NAMES,
+  setRoleBinding,
+  viewRoleBinding,
+  type RoleName,
+} from "../session/roles.js";
 import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import { readCappedUtf8 } from "../execution/input.js";
@@ -933,6 +940,40 @@ program
 
 // ---------------------------------------------------------------- session (ChatGPT conversation / Project memory)
 
+function parseRoleOption(value: string): RoleName {
+  const role = value.trim().toLowerCase();
+  if (!(ROLE_NAMES as readonly string[]).includes(role)) {
+    throw new Error(`role must be one of ${ROLE_NAMES.join(", ")}`);
+  }
+  return role as RoleName;
+}
+
+function parseRevisionOption(value: string): number {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error("expected revision must be a non-negative integer");
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error("expected revision must be a non-negative safe integer");
+  }
+  return parsed;
+}
+
+function parseIterationOption(value: string): number {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error("iteration must be a non-negative integer");
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error("iteration must be a non-negative safe integer");
+  }
+  return parsed;
+}
+
+const roleLabel = (role: RoleName): string => (role === "planning" ? "规划（planning）" : "验收（audit）");
+
 const session = program
   .command("session")
   .description("Remember the ChatGPT Project and conversation for this workspace");
@@ -942,9 +983,44 @@ session
   .description("Show the saved ChatGPT conversation / Project for this workspace")
   .option("-w, --workspace <path>")
   .option("--same-thread", "reuse the saved project chat only after this Codex thread is confirmed", false)
+  .option("--role <role>", "planning | audit role binding for the current Codex thread")
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; sameThread: boolean; json: boolean }) => {
+  .action((opts: { workspace?: string; sameThread: boolean; role?: string; json: boolean }) => {
     const workspace = new Workspace(resolveWorkspace(opts.workspace));
+    if (opts.role !== undefined) {
+      try {
+        const owner = resolveOwnerThreadId();
+        const view = viewRoleBinding(workspace.id, owner, parseRoleOption(opts.role));
+        if (opts.json) {
+          say(JSON.stringify(view));
+          return;
+        }
+        if (!view.bound || !view.binding) {
+          say(`${roleLabel(view.role)}角色：尚未绑定（owner ${view.ownerThreadId}，revision ${view.revision}）`);
+          say("· 未绑定时不会继承工作区原有会话 URL，也不会自动猜 owner。");
+          return;
+        }
+        const binding = view.binding;
+        say(`角色：${roleLabel(view.role)}`);
+        say(`owner：${view.ownerThreadId}`);
+        say(`revision：${view.revision}`);
+        if (binding.projectUrl) say(`合集：${binding.projectUrl}`);
+        if (binding.title) say(`会话：${binding.title}`);
+        if (binding.url) say(`对话：${binding.url}`);
+        if (binding.connectorName) say(`连接器：${binding.connectorName}`);
+        if (binding.candidateSha256) {
+          say(`候选 SHA256：${binding.candidateSha256}（仅元数据，不代表已核验文件或审核通过）`);
+        }
+        if (binding.checkpoint) {
+          say(
+            `存档：${binding.checkpoint.protocolState} / 等待 ${binding.checkpoint.waitingFor}（第 ${binding.checkpoint.iteration} 轮）`
+          );
+        }
+      } catch (error) {
+        handleCliError(error, opts.json);
+      }
+      return;
+    }
     const saved = readSession(workspace.id);
     const conversation = resolveConversation(saved, { sameThread: opts.sameThread });
     if (opts.json) say(JSON.stringify({ ok: true, session: saved, conversation }));
@@ -984,6 +1060,9 @@ session
   .option("--known-issues <text>")
   .option("--next-step <text>")
   .option("--clear-checkpoint", "drop the active checkpoint (task DONE)", false)
+  .option("--role <role>", "planning | audit role binding (never touches the workspace session)")
+  .option("--candidate <sha256>", "audit candidate SHA256, recorded as metadata only")
+  .option("--expected-revision <n>", "required when the role binding already exists")
   .action(
     (opts: {
       workspace?: string;
@@ -1002,6 +1081,9 @@ session
       knownIssues?: string;
       nextStep?: string;
       clearCheckpoint: boolean;
+      role?: string;
+      candidate?: string;
+      expectedRevision?: string;
     }) => {
       const workspace = new Workspace(resolveWorkspace(opts.workspace));
       const modeRaw = opts.mode?.trim().toLowerCase();
@@ -1020,6 +1102,59 @@ session
         : undefined;
       if (waitingNorm && !WAITING_FOR.includes(waitingNorm as WaitingFor)) {
         throw new Error(`waiting-for must be one of ${WAITING_FOR.join(", ")}`);
+      }
+      if (opts.role === undefined && (opts.candidate !== undefined || opts.expectedRevision !== undefined)) {
+        throw new Error("--candidate and --expected-revision require --role");
+      }
+      if (opts.role !== undefined) {
+        try {
+          if (modeRaw === "long-chat") {
+            throw new Error("--role requires project mode; --mode long-chat is not supported");
+          }
+          const role = parseRoleOption(opts.role);
+          if (opts.candidate !== undefined && role !== "audit") {
+            throw new Error("--candidate is only valid with --role audit");
+          }
+          const expectedRevision =
+            opts.expectedRevision === undefined ? undefined : parseRevisionOption(opts.expectedRevision);
+          const owner = resolveOwnerThreadId();
+          const bindings = setRoleBinding(
+            workspace.id,
+            owner,
+            role,
+            {
+              url: opts.url,
+              title: opts.title,
+              taskId: opts.task,
+              iteration: opts.iteration === undefined ? undefined : parseIterationOption(opts.iteration),
+              lastState: opts.state,
+              conversationMode: modeRaw as ConversationMode | undefined,
+              projectUrl: opts.projectUrl,
+              connectorName: opts.connectorName,
+              clearCheckpoint: opts.clearCheckpoint,
+              candidateSha256: opts.candidate,
+              checkpoint: protocolRaw
+                ? {
+                    protocolState: protocolRaw as ProtocolState,
+                    waitingFor: (waitingNorm as WaitingFor | undefined) ?? undefined,
+                    originalGoal: opts.goal,
+                    completedSubtasks: opts.completedSubtasks,
+                    knownIssues: opts.knownIssues,
+                    nextExpectedStep: opts.nextStep,
+                  }
+                : undefined,
+            },
+            { expectedRevision }
+          );
+          check(`已保存${roleLabel(role)}角色绑定（owner ${owner}，revision ${bindings.revision}）`);
+          say("· 只更新该角色；工作区原会话与检查点未被改动。");
+          if (opts.candidate !== undefined) {
+            say("· 候选 SHA256 仅为元数据，不代表已核验文件或审核通过。");
+          }
+        } catch (error) {
+          handleCliError(error, false);
+        }
+        return;
       }
       const saved = mergeSession(readSession(workspace.id), {
         url: opts.url,

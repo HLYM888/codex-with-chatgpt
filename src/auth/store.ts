@@ -8,7 +8,6 @@ export const SUPPORTED_SCOPES = [
   "workspace.search",
   "git.read",
   "execution.read",
-  "artifacts.write",
   "offline_access",
 ] as const;
 
@@ -272,8 +271,7 @@ export class AuthStore {
 }
 
 export function filterScopes(requested: string | undefined): string[] {
-  // Adding a write capability must not silently widen legacy/default grants.
-  const defaults = SUPPORTED_SCOPES.filter((scope) => scope !== "artifacts.write");
+  const defaults = [...SUPPORTED_SCOPES];
   if (!requested || requested.trim() === "") return [...defaults];
   const asked = requested.split(/[\s+]+/).filter(Boolean);
   const granted = asked.filter((scope) => (SUPPORTED_SCOPES as readonly string[]).includes(scope));

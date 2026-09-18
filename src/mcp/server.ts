@@ -91,7 +91,6 @@ export function createMcpServer(ctx: McpContext): McpServer {
             materialRuntimeNote: "配置不等于依赖已验证；以read_material实际结果为准。",
             materialRootsTool: "list_material_roots",
             contextManifestTool: "context_manifest",
-            deliverables: { tool: "receive_deliverable", requiresLocalEnable: true, scope: "artifacts.write" },
           },
           ...project,
           git: {

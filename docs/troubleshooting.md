@@ -20,12 +20,13 @@ second bridge and do not Delete the ChatGPT connector. Wait and run doctor
 again. The local process may still be running.
 
 ### Everything was quit and ChatGPT can no longer connect
-Quitting Codex / the terminal stops the public address. The next `c2c doctor`
-starts a new address and sets `chatgptRepair.needed`. The Skill should tell the
-user that the old address expired, then **Delete** THIS workspace's
-connector (`chatgptRepair.connectorName`) and create it again with the new
-address (never click Reconnect — the old URL is dead). Other workspaces keep
-their own connectors so two projects can stay connected at once.
+Quitting Codex / the terminal does not by itself prove that the public address
+changed. Run a fresh `c2c doctor` and use its structured result. A
+`namedRepair` requires the named-tunnel recovery first; a `chatgptRepair`
+requires the current supported action for the exact
+`chatgptRepair.connectorName`. Reuse a healthy connector and do not pre-decide
+Delete, Reconnect or recreation from an old failure pattern. Other workspaces
+keep their own connectors so two projects can stay connected at once.
 
 Fixed ChatGPT pages for first-time setup and later repair (do not hunt the UI):
 
@@ -35,8 +36,10 @@ Fixed ChatGPT pages for first-time setup and later repair (do not hunt the UI):
   https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins
 
 ### Tunnel URL unreachable / ChatGPT says the connector is broken
-Same as above: `c2c doctor`, then Delete + recreate THIS workspace's
-connector if `chatgptRepair.needed`. Fresh pairing code: `c2c pair`.
+Same as above: run `c2c doctor`, verify the exact workspace and follow the
+current structured repair action. `chatgptRepair.needed` is not by itself a
+blanket instruction to delete every same-named connector. Fresh pairing code:
+`c2c pair` only when the current result actually requires re-authorization.
 If this workspace uses a stable hostname, doctor sets `namedRepair` instead —
 re-login to Cloudflare (`c2c tunnel login`) and doctor again. Do not Delete
 the connector; the address did not change.
@@ -58,16 +61,19 @@ c2c pair
 generates a fresh one (older codes become invalid immediately).
 
 ### ChatGPT gets 401 on every tool call
-The access token expired and refresh failed (e.g. after `c2c unpair` or a
-long offline period). Delete THIS workspace's connector if the address also
-changed; otherwise run Authorize again in ChatGPT and enter a fresh pairing
-code. Never use Reconnect when the public address has been replaced.
+A 401 can indicate expired or revoked authentication, but do not infer endpoint
+change from the status code alone. Use the current Doctor result and structured
+error to distinguish authentication repair from endpoint repair. Re-authorize
+only the exact workspace connector when required; recreate it only when current
+evidence and authorization require that action.
 
 ### cloudflared is not installed
-macOS: `brew install cloudflared`
-Windows: `winget install Cloudflare.cloudflared`
-Linux: see Cloudflare's package instructions.
-The Skill installs this automatically during setup.
+Reuse an existing verified installation when available. If the current setup
+request or prior instructions authorize dependency installation, use the
+platform's supported package route (macOS: `brew install cloudflared`; Windows:
+`winget install Cloudflare.cloudflared`; Linux: Cloudflare's package
+instructions). Otherwise report the exact missing dependency and stop that
+setup step; setup does not create installation authority.
 If cloudflared is installed in a custom location that is not on `PATH`, set
 `C2C_CLOUDFLARED_PATH` to the executable's absolute path before running `c2c`.
 
@@ -102,11 +108,11 @@ Do not pick another project by name automatically. Open the collection that
 matches this workspace and tell Codex「已找到」, or say you want the old
 long-chat instead. Each workspace has its own Project and its own connector.
 
-### Completely stuck
-```
-c2c stop
-c2c setup
-```
-
-re-creates the bridge, tunnel and pairing session from scratch. Existing
-authorizations stay valid unless you also ran `c2c unpair`.
+### Recovery after a specific diagnosis
+Do not treat a slow page or a vague "stuck" report as permission to stop or
+rebuild anything. Preserve the error and run identity, obtain a fresh Doctor
+result, and follow the recovery workflow for the structured finding. Stop the
+precisely owned instance or run setup again only when current evidence shows
+that reconstruction is required and current authorization covers it. If state,
+ownership or authority is unclear, preserve the existing connection and report
+the minimum blocker.
