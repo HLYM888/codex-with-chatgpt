@@ -17,8 +17,8 @@ false or when `userPrompt` is absent.
      `c2c tunnel choose -w <ws> --mode quick --json`
    - 有域名（例如 example.com）→ first tell them `loginPrompt`, then
      `c2c tunnel choose -w <ws> --mode named --zone <domain> --json`.
-     This may open the user's own browser (the Cloudflare exception in
-     Golden rule 5). Wait until the command finishes.
+      This may open the user's own browser for Cloudflare login; follow the
+      current user authorization and platform login boundary. Wait until the command finishes.
      If they said they have an account but gave no domain: ask once for the
      domain. If the command returns `need: "zone"`, ask once and retry.
      If `fallback` is true: tell them `userMessage` and continue on the
@@ -48,14 +48,14 @@ false or when `userPrompt` is absent.
    dependency only when the user's setup request or prior instructions authorize
    it; otherwise explain the exact missing dependency and necessary action.
    Do not install unrelated packages or silently expand permissions.
-2. If build output or dependencies are missing, follow the isolated candidate
-   procedure in Locations and the update workflow; preserve the active source.
+2. If build output or dependencies are missing, follow the root `SKILL.md`
+   **维护位置** section and `references/workflows/updates.md`; preserve the active source.
 3. Run `c2c sandbox-allow --json`, then **Connection choice**, then
    `c2c setup -w <workspace> --json`.
    `sandbox-allow` edits Codex `config.toml` only — it adds C2C's state directory
    to `[sandbox_workspace_write].writable_roots` so later chats can write logs
-   without elevation. If denied, follow Golden rule 7 and the actual runtime
-   permission policy; never invent an elevation path.
+    without elevation. If denied, follow the root `SKILL.md` **安全设置不变量**
+    and the actual runtime permission policy; never invent an elevation path.
    → returns `{ mcpUrl, pairingCode, workspaceName, connectorName, ... }`.
    `connectorName` is this workspace's plugin title (legacy installs stay
    `Codex with ChatGPT`; additional workspaces get `Codex with ChatGPT · <name>`).
@@ -81,7 +81,7 @@ false or when `userPrompt` is absent.
      mode is required, open this page, enable it, save `--developer-mode`,
      and retry create — do not skip that recovery.
    - 已有该 `connectorName`：先核对精确工作区、端点和新鲜 Doctor 结果，按
-     `workflows/recovery.md` 选择当前受支持动作。健康连接直接复用；不得因同名、
+     `references/workflows/recovery.md` 选择当前受支持动作。健康连接直接复用；不得因同名、
      旧故障经验或设置记录不完整而删除重建。
    - 确认不存在，或当前证据与授权明确要求重建时：
      `https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins`

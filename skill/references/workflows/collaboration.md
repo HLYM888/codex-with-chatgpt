@@ -12,7 +12,7 @@ ChatGPT's replies are expected to be substantive (see step 3). Docs: `docs/proto
 
 ### 每条发送的执行门
 
-无论发送入口是浏览器、C2C、应用还是连接器，每条普通 ChatGPT 消息都执行 `TARGET_CHAT→CLASSIFY→SELECT_IF_NEEDED→READ_BACK→SEND→VERIFY_RESPONSE`，不能只在首次发送或阶段转换时检查。既有对话须锁定具体 `/c/` 输入区；新建首条仅可在已授权且已核验、符合当前绑定会话模式的新聊天输入区执行（项目模式须在已绑定项目内），创建后立即绑定 `/c/` 并再次核实。详细选择器步骤、同次 CUA 断言、应用 API 边界、证据拆分和禁止项统一见 browser.md；门未通过、读回不明或不匹配时不发送，不固定重复点击或抢占生成中的对话。
+无论发送入口是浏览器、C2C、应用还是连接器，每条普通 ChatGPT 消息都执行 `TARGET_CHAT→CLASSIFY→SELECT_IF_NEEDED→READ_BACK→SEND→VERIFY_RESPONSE`，不能只在首次发送或阶段转换时检查。持久 `/c/` 绑定与临时附件 Chat 的实际临时 URL 分别按 `references/workflows/browser.md` 的 `TARGET_CHAT` 门执行；本文件不另立目标规则。门未通过、模型读回不明或不匹配时不发送，不固定重复点击或抢占生成中的对话。
 
 修复模型路由流程时，在用户已授权实测的范围内，以既有对话真实发送、收到回复及 GPT-6 Pro → GPT-5.6 Sol Pro 回切作为验收，不能只测项目首页选择器。平时用下一条必要任务验证，不额外发送消息做例行测试。
 
@@ -45,6 +45,8 @@ ChatGPT 给出完整规划；Codex 采用前核当前用户授权、项目合同
 - 不同时读写两条路径，不从不完整角色记录回退到 legacy，也不省略已有角色更新所需的
   `--expected-revision`。下文“按检查点写入门保存”表示只在上述选中的一条命令后追加所列字段。
 
+以下编号步骤只适用于 C2C 规划与持久验收连接器路线。临时不个性化附件验收直接遵循 `references/workflows/independent-audit.md` 和浏览器发送门，不执行本段 Doctor、boot、`workspace_info` 或持久绑定；身份、授权、材料完整性、隔离只读、模型读回和发送保护仍须核验。
+
 0. `c2c tunnel status -w <workspace> --json`. If `needsChoice`, follow
    **Connection choice** first (existing installs: ask once, then remember).
    Then `c2c doctor -w <workspace> --json` (auto-repairs). **Doctor gate:** if local
@@ -64,7 +66,7 @@ ChatGPT 给出完整规划；Codex 采用前核当前用户授权、项目合同
     read `independent-audit.md`: select a distinct project-only Project, new
     Chat and exact candidate from the reusable pool when lease, cleanup and
     isolation are verified; otherwise use the frozen native-attachment route
-    as a supplement without forcing a queue. On a NEW conversation
+    as a supplement without forcing a queue. On a NEW C2C conversation
    confirm Chat mode (**In-app browser** §7), then send the boot prompt from
    `docs/protocol.md` §Boot Prompt and the workspace_info check (name the
    exact `connectorName`). Confirm the reply names the current workspace
@@ -96,6 +98,12 @@ ChatGPT 给出完整规划；Codex 采用前核当前用户授权、项目合同
    - `BLOCKED`: surface ChatGPT's reason; do not INIT.
    Never re-pair, never recreate the connector, and never rewrite Project
    instructions just to resume.
+
+   A newly created Codex task that needs ongoing ChatGPT collaboration gets a
+   new conversation inside the same verified Project and a new owner-scoped
+   `planning` binding. Do not reuse another Codex task's planning checkpoint or
+   in-progress conversation. This does not authorize a duplicate conversation
+   for ordinary phase changes inside the same Codex task.
 2. Send INIT with the user's goal (skip when the checkpoint says not to):
 
 ```
@@ -124,8 +132,10 @@ INSTRUCTION:
    Then 按检查点写入门保存：`--protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`。
 4. Split the accepted work by verified capability and independent deliverable.
    Let ChatGPT execute its bounded package with available authorized tools;
-   execute the local/integration package in Codex. Follow **Capability-based
-   execution sharing** and do not create a second writer for the same files.
+   route local implementation through the global DSH/Codex execution split,
+   with Codex responsible for integration and verification. Follow the root
+   `SKILL.md` section **本地材料与能力边界**; do not create a second writer for the
+   same files.
    If no suitable ChatGPT execution tool is available, adopt its concrete draft
    only after local validation and report the capability gap explicitly.
    Before you start, 按检查点写入门保存：`--protocol-state EXECUTING --waiting-for none --next-step "finish PLAN then record"`。
@@ -139,6 +149,12 @@ INSTRUCTION:
    keys, or unrelated dumps. Never paste that file (or any log) into ChatGPT.
    If the CLI says the output was not released, still send EXECUTED; ChatGPT
    reviews from git. Then 按检查点写入门保存：`--iteration 1 --state EXECUTED --protocol-state EXECUTED_LOCAL --waiting-for none --next-step "send EXECUTED"`。
+   When this C2C review path is selected, enter it only for a complete, fixed review candidate: exact files, inputs,
+   tests, boundaries and candidate bytes must be stable. A partial candidate,
+   missing documentation, missing formal validation or open implementation work
+   stays local and is not sent as EXECUTED. Work depending on that candidate
+   waits for both ChatGPT review and Codex acceptance; only a truly isolated
+   unit with disjoint writes and budget may proceed in parallel.
 6. Send EXECUTED (no diffs, no logs). Tell ChatGPT to use MCP, including
    `execution_output` when a readable item exists:
 
@@ -169,7 +185,11 @@ TESTS:
    Then 按检查点写入门保存：`--protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`。
 7. ChatGPT reviews via MCP (`git_diff`, `read_file`, `test_status`,
    `execution_output`) and replies DONE / PLAN (next iteration) / BLOCKED.
-8. Loop. Respect maxIterations (`.c2c.json`, default 12). At the limit, pause and ask
+8. Loop. DSH owns task-internal repairs without a fixed correction count. If the
+   same failure continues without new evidence, or the evidence requires an
+   architecture or contract change, freeze the partial and failures and return
+   to planning. The overall protocol still respects
+   maxIterations (`.c2c.json`, default 12). At the limit, pause and ask
    the user: "已完成 12 轮协作，仍有未解决问题，是否继续？"
 9. On DONE: summarize the result to the user in plain language. 按检查点写入门保存：`--state DONE --clear-checkpoint`。
 10. On BLOCKED: read ChatGPT's reason, fix what you can, or surface the single

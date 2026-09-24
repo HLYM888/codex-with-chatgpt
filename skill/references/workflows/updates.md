@@ -37,7 +37,7 @@ Skill 备份和原子版本指针流程。已安装 Skill 会先与已验证 ins
 模板并绑定回退备份。不要把工作树路径直接写入活动指针，也不要用普通
 `c2c update` 把非上游候选重新生成成另一版本。
 
-Inside the checkout directory (see Locations):
+Inside the checkout directory identified by the root `SKILL.md` **维护位置** section:
 
 1. **保护现场（强制）**：先执行 `git status --porcelain=v1 --untracked-files=all`。
    只要有任何已跟踪或未跟踪改动，禁止 `git stash`、`git pull`、`git reset`、

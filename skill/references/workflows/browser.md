@@ -45,7 +45,7 @@ Use the current in-app browser tool documentation, not remembered APIs.
       current supported UI for the independent-audit workflow. It may not contain
       `/c/`; use it only for the frozen-attachment route, never guess a session
       ID and never save it as a `--role audit` binding or ordinary chat.
-   Connector recovery decisions belong only to `workflows/recovery.md`. Use a
+   Connector recovery decisions belong only to `references/workflows/recovery.md`. Use a
    fresh Doctor result, the exact workspace identity and the current supported
    action; do not infer that an address changed, delete a connector, or forbid
    an in-place action from an old failure pattern. If current evidence and
@@ -108,7 +108,7 @@ Use the current in-app browser tool documentation, not remembered APIs.
 
 每一条发送（既有/新对话、boot/INIT/REVIEW/普通消息，以及浏览器、C2C、应用或连接器通道）都必须按当前任务重新判档，形成：`TARGET_CHAT→CLASSIFY→SELECT_IF_NEEDED→READ_BACK→SEND→VERIFY_RESPONSE`。
 
-- `TARGET_CHAT`：既有对话必须锁定同一标签页内目标具体 `/c/` 对话的输入区；新建首条消息仅可在已授权且已核验、符合当前绑定会话模式的新聊天输入区执行（项目模式须在已绑定项目内），创建后立即绑定具体 `/c/` 并再次核对。两者都须确认没有生成中、他任务占用或用户草稿。对既有对话，项目首页、侧栏、其他窗口、旧消息模型标签和回复下方的“切换模型”菜单都不是本条路由入口；旧对话只作入口时不操作，只有用户明确授权该既有对话为验证目标才做最小测试。
+- `TARGET_CHAT`：在 C2C 规划和持久验收路线中，既有对话必须锁定同一标签页内目标具体 `/c/` 对话的输入区；新建首条消息仅可在已授权且已核验、符合当前绑定会话模式的新聊天输入区执行（项目模式须在已绑定项目内），创建后立即绑定具体 `/c/` 并再次核对。临时不个性化附件验收路线以当前受支持界面实际返回且已核验的临时 URL 和同一标签页输入区为目标，不要求 `/c/`，不保存为持久角色或普通聊天绑定。各路线都须确认没有生成中、他任务占用或用户草稿。对既有对话，项目首页、侧栏、其他窗口、旧消息模型标签和回复下方的“切换模型”菜单都不是本条路由入口；旧对话只作入口时不操作，只有用户明确授权该既有对话为验证目标才做最小测试。
 - `CLASSIFY`：按这条消息的当前任务判档，不只沿用首次发送或阶段转换的判断；提示词中写“使用 Pro”不能切换网页模型。先确定目标档及理由，再读取当前型号；当前已经是 Pro 不能反过来充当继续使用 Pro 的理由。
 - `SELECT_IF_NEEDED`：仅在目标与输入区当前选择不一致时切换；已显示相同值时复用这次新鲜读回，不重复点击。
 - `READ_BACK`：在该输入区读回模型和强度。读回不明或不匹配即停止，不能发送；新会话创建后，无论创建时默认值如何，发送前必须再次读回。
